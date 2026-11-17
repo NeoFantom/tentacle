@@ -7,10 +7,12 @@ import io
 import json
 import os
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from phone2agent import cli, config, sync
 from phone2agent.phone import PhoneClient, PhoneError
@@ -80,6 +82,19 @@ class ParseNameTests(unittest.TestCase):
                 self.assertEqual(result["started_at"], from_ms(self.mtime).isoformat(timespec="seconds"))
                 self.assertEqual((result["app"], result["counterpart"]), ("wechat", "张三"))
 
+    def test_aware_filename_timestamp_preserves_instant_in_selected_zone(self):
+        self.source.name_pattern = (
+            r"(?P<app>\S+?)录音 (?P<counterpart>.+?)_(?P<ts>\d{14}[+-]\d{4})"
+        )
+        self.source.ts_format = "%Y%m%d%H%M%S%z"
+        result = sync.parse_name(
+            "微信录音 张三_20261117172841+0800.aac",
+            self.source,
+            self.mtime,
+            ZoneInfo("UTC"),
+        )
+        self.assertEqual(result["started_at"], "2026-11-17T09:28:41+00:00")
+
 
 class SyncTests(unittest.TestCase):
     def setUp(self):
@@ -115,7 +130,12 @@ class SyncTests(unittest.TestCase):
         return path
 
     def scan(self):
-        return sync.scan(self.cfg, self.store, self.client, now=self.now)
+        with mock.patch.object(self.client, "ping", return_value={
+            "time_ms": to_ms(self.now), "timezone": "Asia/Shanghai",
+        }) as ping:
+            result = sync.scan(self.cfg, self.store, self.client, now=self.now)
+        ping.assert_called_once_with()
+        return result
 
     def download(self, **kwargs):
         return sync.download_pending(self.cfg, self.store, self.client, now=self.now, **kwargs)
@@ -153,11 +173,126 @@ class SyncTests(unittest.TestCase):
     def test_minimum_age_boundary_and_future_files(self):
         self.audio("young.aac", age_s=59)
         self.audio("boundary.aac", age_s=60)
-        self.audio("future.aac", age_s=-60)
-        self.assertEqual(self.scan(), sync.ScanResult(found=3, new=1, skipped_young=2))
+        self.audio("near-future.aac", age_s=-59)
+        self.audio("future-boundary.aac", age_s=-60)
+        self.assertEqual(self.scan(), sync.ScanResult(found=4, new=1, skipped_young=3))
         self.assertTrue(self.store.list_recordings()[0]["phone_path"].endswith("boundary.aac"))
         self.now += timedelta(minutes=3)
-        self.assertEqual(self.scan().new, 2)
+        self.assertEqual(self.scan().new, 3)
+
+    def test_phone_clock_controls_age_with_two_hour_skew(self):
+        self.now = datetime.now().astimezone()
+        self.server.close()
+        for offset_s, prefix in ((2 * 60 * 60, "ahead"), (-2 * 60 * 60, "behind")):
+            with self.subTest(offset_s=offset_s):
+                with FakePhone(self.root, clock_offset_s=offset_s) as phone:
+                    client = PhoneClient(config.PhoneConfig(
+                        url=phone.url, token=phone.token, timeout_s=1,
+                    ))
+                    phone_now_ms = client.ping()["time_ms"]
+                    young = self.app_dir / f"{prefix}-young.aac"
+                    mature = self.app_dir / f"{prefix}-mature.aac"
+                    for path, age_s in ((young, 30), (mature, 60)):
+                        path.write_bytes(path.name.encode())
+                        mtime_ms = phone_now_ms - age_s * 1000
+                        os.utime(path, ns=(mtime_ms * 1_000_000, mtime_ms * 1_000_000))
+                    with mock.patch.object(client, "ping", wraps=client.ping) as ping:
+                        result = sync.scan(self.cfg, self.store, client, now=self.now)
+                    ping.assert_called_once_with()
+                    self.assertEqual(result, sync.ScanResult(found=2, new=1, skipped_young=1))
+                    young.unlink()
+                    mature.unlink()
+
+    def test_missing_phone_time_uses_pc_time_for_backfill_and_age(self):
+        self.audio("young.aac", age_s=30)
+        self.audio("mature.aac", age_s=60)
+        with mock.patch.object(self.client, "ping", return_value={
+            "timezone": "Asia/Shanghai",
+        }) as ping, mock.patch.object(self.client, "find", wraps=self.client.find) as find:
+            result = sync.scan(self.cfg, self.store, self.client, now=self.now)
+        ping.assert_called_once_with()
+        self.assertEqual(result, sync.ScanResult(found=2, new=1, skipped_young=1))
+        for call in find.call_args_list:
+            self.assertEqual(call.kwargs["since_ms"],
+                             to_ms(self.now - timedelta(days=self.cfg.sync.backfill_days)))
+
+    def test_missing_phone_timezone_uses_process_local_timezone(self):
+        if not hasattr(time, "tzset"):
+            self.skipTest("time.tzset is unavailable")
+        old_timezone = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "America/Los_Angeles"
+            time.tzset()
+            self.audio(age_s=120)
+            with mock.patch.object(self.client, "ping", return_value={
+                "time_ms": to_ms(self.now),
+            }):
+                sync.scan(self.cfg, self.store, self.client, now=self.now)
+            row, = self.store.list_recordings()
+            self.assertEqual(row["started_at"], "2026-11-17T17:28:41-08:00")
+        finally:
+            if old_timezone is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_timezone
+            time.tzset()
+
+    def test_phone_timezone_overrides_process_timezone_and_config_wins(self):
+        if not hasattr(time, "tzset"):
+            self.skipTest("time.tzset is unavailable")
+        old_timezone = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "America/Los_Angeles"
+            time.tzset()
+            self.audio(age_s=120)
+            self.audio("unmatched.aac", age_s=120)
+            self.scan()
+            rows = {Path(row["phone_path"]).name: row for row in self.store.list_recordings()}
+            self.assertEqual(rows[APP_NAME]["started_at"], "2026-11-17T17:28:41+08:00")
+            self.assertTrue(rows["unmatched.aac"]["started_at"].endswith("+08:00"))
+
+            self.store.conn.execute("DELETE FROM recordings")
+            self.cfg.sync.timezone = "UTC"
+            self.scan()
+            rows = {Path(row["phone_path"]).name: row for row in self.store.list_recordings()}
+            self.assertEqual(rows[APP_NAME]["started_at"], "2026-11-17T17:28:41+00:00")
+            self.assertTrue(rows["unmatched.aac"]["started_at"].endswith("+00:00"))
+        finally:
+            if old_timezone is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_timezone
+            time.tzset()
+
+    def test_invalid_timezone_warns_and_mtime_fallback_uses_local_zone(self):
+        if not hasattr(time, "tzset"):
+            self.skipTest("time.tzset is unavailable")
+        old_timezone = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "America/Los_Angeles"
+            time.tzset()
+            self.cfg.sync.timezone = "Invalid/Timezone"
+            self.audio("unmatched.aac", age_s=120)
+            self.scan()
+            row, = self.store.list_recordings()
+            expected = from_ms(row["mtime_ms"]).isoformat(timespec="seconds")
+            self.assertEqual(row["started_at"], expected)
+            event, = self.store.recent_events(10)
+            self.assertEqual(event["level"], "warning")
+            self.assertIn("Invalid sync timezone", event["message"])
+        finally:
+            if old_timezone is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_timezone
+            time.tzset()
+
+    def test_far_future_mtime_warns_and_is_accepted(self):
+        self.audio("future.aac", age_s=-61)
+        self.assertEqual(self.scan(), sync.ScanResult(found=1, new=1))
+        event, = self.store.recent_events(10)
+        self.assertEqual(event["level"], "warning")
+        self.assertIn("ahead of phone clock", event["message"])
 
     def test_rescan_is_idempotent(self):
         self.audio()
@@ -176,9 +311,12 @@ class SyncTests(unittest.TestCase):
 
     def test_unreachable_scan_logs_once_and_stops(self):
         self.server.close()
-        with mock.patch.object(self.client, "find", wraps=self.client.find) as find:
-            self.assertEqual(self.scan(), sync.ScanResult(errors=1))
-        self.assertEqual(find.call_count, 1)
+        with mock.patch.object(self.client, "ping", wraps=self.client.ping) as ping, \
+                mock.patch.object(self.client, "find", wraps=self.client.find) as find:
+            self.assertEqual(sync.scan(self.cfg, self.store, self.client, now=self.now),
+                             sync.ScanResult(errors=1))
+        ping.assert_called_once_with()
+        find.assert_not_called()
         self.assertEqual(len(self.store.recent_events(10)), 1)
 
     def test_scan_http_error_continues_and_truncation_is_reported(self):

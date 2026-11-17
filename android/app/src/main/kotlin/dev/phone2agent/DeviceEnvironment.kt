@@ -13,9 +13,11 @@ import dev.phone2agent.core.StorageRoot
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.SocketException
+import java.util.TimeZone
 
 object DeviceEnvironment {
     val deviceName: String get() = "${Build.MANUFACTURER} ${Build.MODEL}"
+    val timezoneId: String get() = TimeZone.getDefault().id
 
     fun allFilesAccess(context: Context): Boolean = if (Build.VERSION.SDK_INT >= 30) {
         Environment.isExternalStorageManager()

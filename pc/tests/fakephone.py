@@ -37,9 +37,13 @@ class _Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, root: Path, token: str):
+    def __init__(
+        self, address, root: Path, token: str, timezone: str, clock_offset_s: float,
+    ):
         self.root = root.resolve(strict=True)
         self.token = token
+        self.timezone = timezone
+        self.clock_offset_s = clock_offset_s
         super().__init__(address, _Handler)
 
 
@@ -244,7 +248,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "android_sdk": 35,
                 "roots": [{"id": "primary", "path": str(self.server.root), "label": "Internal"}],
                 "all_files_access": True,
-                "time_ms": time.time_ns() // 1_000_000,
+                "time_ms": time.time_ns() // 1_000_000 + int(self.server.clock_offset_s * 1000),
+                "timezone": self.server.timezone,
             },
         )
 
@@ -451,9 +456,17 @@ class FakePhone:
     that explicitly invoke ``start()``.
     """
 
-    def __init__(self, root_dir: str | os.PathLike[str], token: str = "t"):
+    def __init__(
+        self,
+        root_dir: str | os.PathLike[str],
+        token: str = "t",
+        timezone: str = "Asia/Shanghai",
+        clock_offset_s: float = 0,
+    ):
         self.root_dir = Path(root_dir)
         self.token = token
+        self.timezone = timezone
+        self.clock_offset_s = clock_offset_s
         self.url = ""
         self._server: _Server | None = None
         self._thread: threading.Thread | None = None
@@ -463,7 +476,10 @@ class FakePhone:
             return self
         if not self.root_dir.is_dir():
             raise ValueError(f"fake phone root is not a directory: {self.root_dir}")
-        self._server = _Server(("127.0.0.1", 0), self.root_dir, self.token)
+        self._server = _Server(
+            ("127.0.0.1", 0), self.root_dir, self.token,
+            self.timezone, self.clock_offset_s,
+        )
         host, port = self._server.server_address[:2]
         self.url = f"http://{host}:{port}"
         self._thread = threading.Thread(target=self._server.serve_forever, name="fake-phone", daemon=True)

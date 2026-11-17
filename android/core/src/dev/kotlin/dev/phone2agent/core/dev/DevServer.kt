@@ -7,6 +7,7 @@ import dev.phone2agent.core.StorageRoot
 import java.io.File
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.TimeZone
 import java.util.concurrent.CountDownLatch
 
 private data class Options(val root: File, val port: Int, val token: String)
@@ -28,6 +29,7 @@ fun main(args: Array<String>) {
                 androidSdk = 0,
                 allFilesAccess = true,
                 roots = listOf(storageRoot),
+                timezone = TimeZone.getDefault().id,
             )
         },
     )

@@ -42,6 +42,7 @@ class HttpServerTest {
                     androidSdk = 35,
                     allFilesAccess = true,
                     roots = listOf(StorageRoot("primary", root.toFile(), "Internal")),
+                    timezone = "Asia/Shanghai",
                 )
             },
         )
@@ -135,6 +136,7 @@ class HttpServerTest {
         assertTrue(response.text.contains("\"all_files_access\":true"))
         assertTrue(response.text.contains("\"id\":\"primary\""))
         assertTrue(Regex("\\\"time_ms\\\":\\d+").containsMatchIn(response.text))
+        assertTrue(response.text.contains("\"timezone\":\"Asia/Shanghai\""))
     }
 
     @Test

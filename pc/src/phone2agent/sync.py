@@ -10,6 +10,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import Config, SourceConfig
 from .phone import PhoneClient, PhoneError
@@ -33,8 +34,8 @@ class ScanResult:
     errors: int = 0
 
 
-def parse_name(filename: str, source: SourceConfig, mtime_ms: int) -> dict:
-    """Extract optional metadata; timestamps always include the local offset."""
+def parse_name(filename: str, source: SourceConfig, mtime_ms: int, tz=None) -> dict:
+    """Extract optional metadata; timestamps always include the selected offset."""
     groups = {}
     has_app = False
     if source.name_pattern:
@@ -51,10 +52,16 @@ def parse_name(filename: str, source: SourceConfig, mtime_ms: int) -> dict:
     app = _APPS.get(app, app) if app else None
     if app is None and source.name == "call" and not has_app:
         app = "phone"
-    started = from_ms(mtime_ms)
+    started = from_ms(mtime_ms, tz)
     if groups.get("ts") and source.ts_format:
         try:
-            started = datetime.strptime(groups["ts"], source.ts_format).astimezone()
+            parsed = datetime.strptime(groups["ts"], source.ts_format)
+            if tz is None:
+                started = parsed.astimezone()
+            elif parsed.tzinfo is None:
+                started = parsed.replace(tzinfo=tz)
+            else:
+                started = parsed.astimezone(tz)
         except (ValueError, OverflowError):
             pass
     return {
@@ -68,15 +75,38 @@ def scan(
     cfg: Config, store: Store, client: PhoneClient, now: datetime | None = None,
 ) -> ScanResult:
     """Scan each source using its persisted high-water mark and a day's overlap."""
-    current = now if now is not None else datetime.now().astimezone()
-    now_ms = to_ms(current)
     result = ScanResult()
+    current = now if now is not None else datetime.now().astimezone()
+    try:
+        ping = client.ping()
+    except PhoneError as exc:
+        result.errors += 1
+        store.log_event(
+            "warning" if exc.status is None else "error",
+            f"Scan phone: {exc.code}: {exc}",
+        )
+        return result
+
+    phone_now_ms = ping.get("time_ms")
+    if not isinstance(phone_now_ms, (int, float)):
+        phone_now_ms = to_ms(current)
+    timezone_name = cfg.sync.timezone or ping.get("timezone")
+    zone = None
+    if timezone_name:
+        try:
+            zone = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
+            store.log_event(
+                "warning",
+                f"Invalid sync timezone {timezone_name!r}; using local timezone",
+            )
+    phone_now = from_ms(phone_now_ms, zone)
     for source in cfg.sources:
         newest = store.conn.execute(
             "SELECT MAX(mtime_ms) FROM recordings WHERE source = ?", (source.name,)
         ).fetchone()[0]
         since_ms = (
-            to_ms(current - timedelta(days=cfg.sync.backfill_days))
+            to_ms(phone_now - timedelta(days=cfg.sync.backfill_days))
             if newest is None else newest - 86_400_000
         )
         try:
@@ -95,13 +125,21 @@ def scan(
             store.log_event("warning", f"Scan source {source.name}: results truncated at 5000 files")
         for entry in listing["entries"]:
             result.found += 1
-            if now_ms - entry["mtime_ms"] < source.min_age_s * 1000:
+            age_ms = phone_now_ms - entry["mtime_ms"]
+            min_age_ms = source.min_age_s * 1000
+            if 0 <= age_ms < min_age_ms or -min_age_ms <= age_ms < 0:
                 result.skipped_young += 1
                 continue
+            if age_ms < -min_age_ms:
+                store.log_event(
+                    "warning",
+                    f"Scan source {source.name}: file {entry['path']} mtime is "
+                    f"{-age_ms / 1000:.1f}s ahead of phone clock; accepting",
+                )
             _, created = store.add_recording(
                 source=source.name, phone_path=entry["path"], size=entry["size"],
                 mtime_ms=entry["mtime_ms"], status="discovered",
-                **parse_name(entry["name"], source, entry["mtime_ms"]),
+                **parse_name(entry["name"], source, entry["mtime_ms"], zone),
             )
             result.new += int(created)
     return result

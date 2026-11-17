@@ -57,8 +57,14 @@ class ServerService : Service() {
                     tokenProvider = { settings.token },
                     api = api,
                     info = {
-                        PingInfo(BuildConfig.VERSION_NAME, DeviceEnvironment.deviceName,
-                            Build.VERSION.SDK_INT, DeviceEnvironment.allFilesAccess(this), api.roots)
+                        PingInfo(
+                            version = BuildConfig.VERSION_NAME,
+                            device = DeviceEnvironment.deviceName,
+                            androidSdk = Build.VERSION.SDK_INT,
+                            allFilesAccess = DeviceEnvironment.allFilesAccess(this),
+                            roots = api.roots,
+                            timezone = DeviceEnvironment.timezoneId,
+                        )
                     },
                 )
                 server = next

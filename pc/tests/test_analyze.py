@@ -49,7 +49,7 @@ class AnalyzeTests(unittest.TestCase):
         self.addCleanup(self.store.close)
         self.id = self.store.add_recording(
             "calls", "recordings/example.wav", 100, 1000, status="transcribed",
-            app="phone", counterpart="Colleague", started_at="2026-01-01T10:00:00+00:00",
+            app="phone", counterpart="Colleague", started_at="2026-01-01T18:00:00+08:00",
             duration_s=70.5)[0]
         self.transcript = {"backend": "command", "model": "test", "language": "en",
                            "duration_s": 70.5, "text": "review the demo",
@@ -71,10 +71,12 @@ class AnalyzeTests(unittest.TestCase):
         prompt = build_prompt(self.cfg, self.store.get_recording(self.id), self.transcript,
                               [Project("demo", self.root / "projects/demo", "Demo summary", False, False)])
         for value in ("Owner", "English", "source: calls", "app: phone",
-                      "counterpart: Colleague", "started_at: 2026-01-01T10:00:00+00:00",
+                      "counterpart: Colleague", "started_at: 2026-01-01T18:00:00+08:00",
+                      "Timezone: +08:00",
                       "duration: 70.5", "demo — Demo summary", "[01:05] S1: review the demo",
                       "[01:08] Agreed."):
             self.assertIn(value, prompt)
+        self.assertNotIn("started_at: 2026-01-01T10:00:00+00:00", prompt)
         self.assertNotIn("{{", prompt)
 
     def test_build_prompt_truncates_head_and_tail(self):

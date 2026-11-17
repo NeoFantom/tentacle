@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import logging
 import math
+import os
 import struct
 import sys
 import tempfile
@@ -147,7 +149,10 @@ class BackendCacheTests(unittest.TestCase):
 
         funasr_backend._get_model.cache_clear()
         try:
-            with mock.patch.dict(sys.modules, {"funasr": SimpleNamespace(AutoModel=FakeAutoModel)}):
+            with (
+                mock.patch.dict(sys.modules, {"funasr": SimpleNamespace(AutoModel=FakeAutoModel)}),
+                mock.patch.object(funasr_backend, "_resolve_model", side_effect=lambda name: name),
+            ):
                 first = funasr_backend._get_model("model-a", "cpu", True)
                 second = funasr_backend._get_model("model-a", "cpu", True)
                 third = funasr_backend._get_model("model-a", "cpu", False)
@@ -161,6 +166,7 @@ class BackendCacheTests(unittest.TestCase):
         self.assertEqual(created[0]["device"], "cpu")
         self.assertEqual(created[0]["spk_model"], "cam++")
         self.assertEqual(created[0]["vad_kwargs"], {"max_single_segment_time": 30_000})
+        self.assertTrue(created[0]["disable_update"])
         self.assertIsNone(created[1]["spk_model"])
 
     def test_funasr_transcribe_forwards_bounded_batch_and_hotwords(self):
@@ -174,6 +180,7 @@ class BackendCacheTests(unittest.TestCase):
         fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True))
         samples = object()
         with (
+            mock.patch.dict(os.environ, {"P2A_ASR_VERBOSE": "0"}),
             mock.patch.dict(sys.modules, {"torch": fake_torch}),
             mock.patch.object(funasr_backend, "_get_model", return_value=model) as get_model,
             mock.patch.object(funasr_backend, "load_audio", return_value=(samples, 1.0)),
@@ -186,6 +193,8 @@ class BackendCacheTests(unittest.TestCase):
                 Path("call.aac"),
                 AsrConfig(device="cpu", hotwords=[]),
             )
+            with mock.patch.dict(os.environ, {"P2A_ASR_VERBOSE": "1"}):
+                funasr_backend.transcribe(Path("call.aac"), AsrConfig())
 
         get_model.assert_any_call("paraformer-zh", "cuda", True)
         get_model.assert_any_call("paraformer-zh", "cpu", True)
@@ -194,9 +203,122 @@ class BackendCacheTests(unittest.TestCase):
         self.assertEqual(first["fs"], 16_000)
         self.assertEqual(first["batch_size_s"], 60)
         self.assertTrue(first["sentence_timestamp"])
+        self.assertTrue(first["disable_pbar"])
+        self.assertFalse(model.generate.call_args_list[2].kwargs["disable_pbar"])
         self.assertEqual(first["hotword"], "ExampleName phone2agent")
         self.assertEqual(model.generate.call_args_list[1].kwargs["hotword"], "")
         self.assertEqual(value["segments"][0]["speaker"], "S1")
+
+    def test_funasr_resolves_all_cached_models_without_downloads(self):
+        from phone2agent.asr import funasr_backend
+
+        aliases = {name: f"publisher/{name}" for name in
+                   ("paraformer-zh", "fsmn-vad", "ct-punc", "cam++")}
+        snapshot = mock.Mock(side_effect=lambda repo, **kw: f"/cache/{repo}")
+        download = mock.Mock(side_effect=AssertionError("network must not be used"))
+        constructor = mock.Mock()
+        modules = {
+            "funasr": SimpleNamespace(AutoModel=constructor),
+            "funasr.download.name_maps_from_hub": SimpleNamespace(name_maps_ms=aliases),
+            "modelscope.hub.snapshot_download": SimpleNamespace(snapshot_download=snapshot),
+            "funasr.download.download_model_from_hub": SimpleNamespace(
+                get_or_download_model_dir=download),
+        }
+        funasr_backend._get_model.cache_clear()
+        try:
+            with mock.patch.dict(sys.modules, modules):
+                funasr_backend._get_model("paraformer-zh", "cpu", True)
+                # A user-specified repository id uses the same cache resolution.
+                self.assertEqual(funasr_backend._resolve_model("custom/repo"),
+                                 "/cache/custom/repo")
+        finally:
+            funasr_backend._get_model.cache_clear()
+
+        download.assert_not_called()
+        self.assertTrue(all(call.kwargs == {"local_files_only": True}
+                            for call in snapshot.call_args_list))
+        options = constructor.call_args.kwargs
+        for field, name in (("model", "paraformer-zh"), ("vad_model", "fsmn-vad"),
+                            ("punc_model", "ct-punc"), ("spk_model", "cam++")):
+            self.assertEqual(options[field], f"/cache/{aliases[name]}")
+        self.assertTrue(options["disable_update"])
+
+    def test_funasr_local_directory_needs_no_hub_import(self):
+        from phone2agent.asr import funasr_backend
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.dict(sys.modules, {"modelscope": None, "funasr": None}):
+                self.assertEqual(funasr_backend._resolve_model(directory),
+                                 str(Path(directory).resolve()))
+
+    def test_funasr_missing_model_download_and_failure_identify_model(self):
+        from phone2agent.asr import funasr_backend
+        from phone2agent.asr.base import AsrError
+
+        snapshot = mock.Mock(side_effect=FileNotFoundError("not cached"))
+        download = mock.Mock(return_value="downloaded/model")
+        with mock.patch.dict(sys.modules, {
+            "funasr.download.name_maps_from_hub": SimpleNamespace(
+                name_maps_ms={"ct-punc": "publisher/punctuation"}),
+            "modelscope.hub.snapshot_download": SimpleNamespace(snapshot_download=snapshot),
+            "funasr.download.download_model_from_hub": SimpleNamespace(
+                get_or_download_model_dir=download),
+        }):
+            self.assertEqual(funasr_backend._resolve_model("ct-punc"), "downloaded/model")
+            download.assert_called_once_with("publisher/punctuation", "master")
+            download.side_effect = OSError("offline")
+            with self.assertRaisesRegex(AsrError, "ct-punc.*network access.*required once"):
+                funasr_backend._resolve_model("ct-punc")
+
+    def test_funasr_quiet_output_restores_logging_even_on_failure(self):
+        from phone2agent.asr import funasr_backend
+
+        root = logging.getLogger()
+        handlers, level, disabled = root.handlers[:], root.level, root.manager.disable
+        output, errors = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"P2A_ASR_VERBOSE": "0"}),
+            mock.patch("sys.stdout", output), mock.patch("sys.stderr", errors),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "failure"):
+                with funasr_backend._quiet_output():
+                    self.assertFalse(logging.getLogger("modelscope").isEnabledFor(logging.INFO))
+                    print("library banner")
+                    print("progress bar", file=sys.stderr)
+                    logging.info("library info")
+                    root.addHandler(logging.NullHandler())
+                    root.setLevel(logging.DEBUG)
+                    raise RuntimeError("failure")
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(errors.getvalue(), "")
+        self.assertEqual(root.handlers, handlers)
+        self.assertEqual(root.level, level)
+        self.assertEqual(root.manager.disable, disabled)
+
+    def test_funasr_quiet_import_keeps_library_log_handler_usable(self):
+        from phone2agent.asr import funasr_backend
+
+        logger = logging.Logger("library-import")
+        errors = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"P2A_ASR_VERBOSE": "0"}),
+            mock.patch.dict(logging.Logger.manager.loggerDict, {logger.name: logger}),
+            mock.patch("sys.stderr", errors),
+        ):
+            with funasr_backend._quiet_output():
+                handler = logging.StreamHandler()
+                logger.addHandler(handler)
+            logger.warning("still usable")
+        self.assertEqual(errors.getvalue(), "still usable\n")
+
+    def test_funasr_verbose_preserves_library_output(self):
+        from phone2agent.asr import funasr_backend
+
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"P2A_ASR_VERBOSE": "1"}), mock.patch("sys.stdout", output):
+            with funasr_backend._quiet_output():
+                print("library banner")
+        self.assertEqual(output.getvalue(), "library banner\n")
 
     def test_whisper_model_is_cached_by_options(self):
         from phone2agent.asr import whisper_backend

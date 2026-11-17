@@ -20,15 +20,34 @@ class AnalysisError(RuntimeError):
     """Analysis could not complete; stage failures have been recorded in the store."""
 
 
+def _timezone_offset(value) -> str:
+    if not isinstance(value, str):
+        return "unknown"
+    try:
+        offset = datetime.fromisoformat(value).utcoffset()
+    except ValueError:
+        return "unknown"
+    if offset is None:
+        return "unknown"
+    seconds = int(offset.total_seconds())
+    sign = "+" if seconds >= 0 else "-"
+    hours, remainder = divmod(abs(seconds), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    rendered = f"{sign}{hours:02d}:{minutes:02d}"
+    return f"{rendered}:{seconds:02d}" if seconds else rendered
+
+
 def build_prompt(cfg, recording_row, transcript: dict, projects) -> str:
     """Render the packaged template without importing an ASR implementation."""
     row = dict(recording_row)
-    metadata = "\n".join(
+    metadata_lines = [
         f"{label}: {row.get(key) if row.get(key) is not None else 'unknown'}"
         for label, key in (("source", "source"), ("app", "app"),
                            ("counterpart", "counterpart"), ("started_at", "started_at"),
                            ("duration", "duration_s"))
-    )
+    ]
+    metadata_lines.insert(4, f"Timezone: {_timezone_offset(row.get('started_at'))}")
+    metadata = "\n".join(metadata_lines)
     lines = []
     for segment in transcript.get("segments", []):
         seconds = max(0, int(segment["start"]))

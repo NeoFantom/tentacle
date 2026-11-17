@@ -46,6 +46,7 @@ data class PingInfo(
     val androidSdk: Int,
     val allFilesAccess: Boolean,
     val roots: List<StorageRoot>,
+    val timezone: String,
 ) {
     fun toJson(timeMs: Long = System.currentTimeMillis()): Map<String, Any> = linkedMapOf(
         "app" to "phone2agent", "api" to 1, "version" to version, "device" to device,
@@ -53,6 +54,6 @@ data class PingInfo(
         "roots" to roots.map {
             linkedMapOf("id" to it.id, "path" to it.path.canonicalPath, "label" to it.label)
         },
-        "all_files_access" to allFilesAccess, "time_ms" to timeMs,
+        "all_files_access" to allFilesAccess, "time_ms" to timeMs, "timezone" to timezone,
     )
 }
