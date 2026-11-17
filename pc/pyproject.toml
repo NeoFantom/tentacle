@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phone2agent"
+version = "0.1.0"
+description = "Let your local coding agent browse your phone, and turn call recordings into project notes and tasks."
+readme = "../README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+whisper = ["faster-whisper>=1.1", "av"]
+funasr = ["funasr>=1.2", "torch", "torchaudio", "av"]
+
+[project.scripts]
+p2a = "phone2agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+phone2agent = ["config.example.toml", "prompts/*.md", "schemas/*.json"]

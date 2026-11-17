@@ -1,0 +1,83 @@
+# phone2agent configuration — the ONLY place for tunables.
+# Location: --config PATH > $P2A_CONFIG > $XDG_CONFIG_HOME/phone2agent/config.toml
+# Paths accept ~ and $ENV_VARS.
+
+[phone]
+# Filled in by `p2a pair 'p2a://host:port?token=...'`.
+url = ""                       # e.g. "http://192.168.1.23:8765" or "http://100.x.y.z:8765"
+token = ""                     # inline token, or use one of:
+token_file = ""                # file containing the token
+token_env = ""                 # env var holding the token
+timeout_s = 20
+use_system_proxy = false       # phones on LAN/Tailscale are usually NOT reachable via a proxy
+
+[storage]
+data_dir = "~/.local/share/phone2agent"   # recordings, transcripts, analyses, state.db
+
+# Where recordings appear on the phone. Paths are relative to internal storage
+# (/storage/emulated/0) or absolute. Run `p2a discover` to find candidates.
+# name_pattern: Python regex with optional named groups app / counterpart / ts;
+# ts_format: strptime format for the ts group. Without them, mtime is used.
+[[sources]]
+name = "app-call"              # Xiaomi HyperOS "AI 录音纪要" (WeChat / Feishu / QQ calls)
+path = "MIUI/sound_recorder/app_rec"
+extensions = ["aac", "m4a", "mp3", "amr", "wav", "ogg", "opus"]
+name_pattern = '^(?P<app>\S+?)录音 (?P<counterpart>.+?)_(?P<ts>\d{14})'
+ts_format = "%Y%m%d%H%M%S"
+min_age_s = 60                 # ignore files modified within the last N seconds (still recording)
+
+[[sources]]
+name = "call"                  # system phone-call recorder
+path = "MIUI/sound_recorder/call_rec"
+extensions = ["aac", "m4a", "mp3", "amr", "wav", "ogg", "opus"]
+name_pattern = '^(?P<counterpart>.+?)_(?P<ts>\d{14})'
+ts_format = "%Y%m%d%H%M%S"
+min_age_s = 60
+
+[sync]
+interval_s = 300               # daemon loop period
+backfill_days = 7              # first scan only looks this far back
+
+[asr]
+backend = "funasr"             # funasr | faster-whisper | command | none
+language = "zh"
+model = ""                     # empty = backend default (funasr: paraformer-zh; faster-whisper: large-v3)
+diarize = true                 # speaker labels (funasr: cam++ clustering; ignored by backends without it)
+device = "auto"                # auto | cuda | cpu
+compute_type = "auto"          # faster-whisper only: float16 / int8_float16 / int8 / auto
+initial_prompt = ""            # faster-whisper only: vocabulary hint (names, jargon)
+hotwords = []                  # funasr only: hotword list (names, project terms)
+command = []                   # backend="command": argv template, placeholders {input} {output}
+
+[agent]
+kind = "codex"                 # codex | command
+binary = "codex"               # kind=codex: executable name or path
+model = ""                     # kind=codex: empty = codex default
+extra_args = []                # kind=codex: extra argv, e.g. ["-c", 'model_reasoning_effort="medium"']
+command = []                   # kind=command: argv template, placeholders
+                               # {prompt_file} {output_file} {schema_file} {cwd} {mode}
+timeout_s = 1800
+
+[analyze]
+owner_name = "me"              # how the phone owner is referred to in calls / notes
+language = "zh"                # language the notes are written in
+
+[projects]
+roots = ["~/projects"]         # each immediate subdirectory is a candidate project
+extra = []                     # additional explicit project paths
+exclude = ["archive", ".*"]    # glob patterns on project id
+index_file = ""                # optional markdown index with "### <project id>" sections
+min_confidence = 0.6           # below → inbox instead of filing
+default_notes_dir = "notes/calls"
+include_transcript = false     # commit full transcripts into project repos?
+auto_commit = true
+auto_push = true
+
+[tasks]
+require_approval = true        # false = actions run immediately (not recommended)
+
+[pipeline]
+max_attempts = 5
+
+[notify]
+command = []                   # argv template with {title} {body}, e.g. ["notify-send", "{title}", "{body}"]

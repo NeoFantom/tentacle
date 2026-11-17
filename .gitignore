@@ -1,0 +1,12 @@
+tasks.local/
+*.local/
+__pycache__/
+*.egg-info/
+.venv/
+build/
+.gradle/
+local.properties
+android/**/build/
+*.apk
+*.jks
+*.keystore
