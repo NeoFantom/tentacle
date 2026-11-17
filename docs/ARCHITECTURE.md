@@ -293,11 +293,16 @@ For each route with `confidence >= projects.min_confidence`: run the agent in
 read the project's AGENTS.md/CLAUDE.md/README conventions, write the notes
 where that project keeps such records (fallback `projects.default_notes_dir`,
 e.g. `notes/calls/<date>-<slug>.md`), never include the raw transcript unless
-`projects.include_transcript`, touch nothing else, commit only its own files
-(`git commit -m ... -- <paths>`) if `projects.auto_commit`, push if the branch
-has an upstream and `projects.auto_push`. The agent's final message is JSON
-(`schemas/filing.schema.json`: `{files:[...], committed:bool, commit:str|null,
-pushed:bool, notes:str}`) saved to `filings/`. Routes below threshold go to
+`projects.include_transcript`, touch nothing else, and **not run git**. Its
+final message is JSON (`schemas/filing.schema.json`: `{files, commit_message,
+report}`). **p2a itself does the git work deterministically** (agents' sandboxes
+usually forbid network and `.git` writes): verify each listed file is inside the
+project and actually changed, then if `projects.auto_commit` run
+`git add -- <files>` + `git commit -m <msg> -- <files>` (never touching other
+uncommitted changes), and if `projects.auto_push` and the branch has an
+upstream, `git push` (no force; failure is recorded, not retried blindly).
+The result (`files, commit, pushed, report, error`) is saved to
+`filings/<id>-<project>.json`. Routes below threshold go to
 `inbox/<id>.md` and are listed by `p2a inbox`; `p2a route <rec-id> <project>`
 files them manually.
 
@@ -306,7 +311,8 @@ Each `actions[]` entry becomes a `pending` task (or auto-runs if
 ```
 p2a tasks [--all]                 # list pending (or all)
 p2a tasks show ID
-p2a tasks approve ID [-m NOTE]    # → runs agent in project dir with prompts/run_task.md
+p2a tasks approve ID [-m NOTE]    # → runs agent in project dir with prompts/run_task.md,
+                                  #   same JSON result + deterministic commit/push as filing
 p2a tasks reject ID [-m NOTE]
 ```
 

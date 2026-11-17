@@ -71,7 +71,8 @@ min_confidence = 0.6           # below → inbox instead of filing
 default_notes_dir = "notes/calls"
 include_transcript = false     # commit full transcripts into project repos?
 auto_commit = true
-auto_push = true
+auto_push = true               # push only when the branch has an upstream
+no_push = []                   # project id globs that are committed but never pushed
 
 [tasks]
 require_approval = true        # false = actions run immediately (not recommended)

@@ -109,6 +109,7 @@ class ProjectsConfig:
     include_transcript: bool = False
     auto_commit: bool = True
     auto_push: bool = True
+    no_push: list[str] = field(default_factory=list)
 
     def root_paths(self) -> list[Path]:
         return [Path(_expand(r)) for r in self.roots]
