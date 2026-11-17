@@ -28,3 +28,15 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
 }
+
+val dev by sourceSets.creating {
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += output + compileClasspath
+}
+
+tasks.register<JavaExec>("devServer") {
+    group = "application"
+    description = "Runs the phone2agent HTTP server against a desktop directory."
+    classpath = dev.runtimeClasspath
+    mainClass = "dev.phone2agent.core.dev.DevServerKt"
+}

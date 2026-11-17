@@ -16,4 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "phone2agent"
 
-include(":core")
+include(":core", ":app")

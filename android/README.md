@@ -1,17 +1,109 @@
-# Android core
+# Android application and core
 
-This Gradle project currently includes only `:core`. The Android application
-plugin is declared at the root for a future `:app` module. The build uses JDK 21
-and emits Java 17 bytecode. `:core` uses Kotlin's standard library and JDK APIs;
-JUnit is confined to tests.
+`:app` is a framework-only Android shell for the JVM `:core` file server.
+It uses Kotlin and Android framework views, follows the system light/dark
+appearance through DeviceDefault themes, and has no AndroidX, Material or
+third-party runtime libraries. Kotlin's standard library is the only runtime
+library beyond `:core` and Android. The application id and label are
+`dev.phone2agent` and `phone2agent`; version is `0.1.0` (code 1), minimum API 26,
+compile/target API 35. JDK 21 builds Java 17 bytecode; JUnit is test-only.
+
+## Build
+
+Install Android SDK platform 35 and the build-tools requested by AGP (currently
+34.0.0), using the SDK's `cmdline-tools/latest/bin/sdkmanager`. Point
+`ANDROID_HOME` at the SDK, or put `sdk.dir` in the gitignored `local.properties`.
+Do not commit local SDK paths, APKs, signing material or build directories.
 
 ```sh
-./gradlew :core:test
-./gradlew :core:test --offline
+./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+./gradlew :app:assembleRelease
 ```
 
-The offline command works after the wrapper and dependencies have been cached.
-No Android SDK is needed to build or test `:core`.
+APK outputs are `app/build/outputs/apk/debug/app-debug.apk` and
+`app/build/outputs/apk/release/app-release-unsigned.apk` (or `app-release.apk`
+when signed). Release is unsigned
+when signing settings are absent; debug uses normal Android debug signing.
+To sign a release, provide all four of `P2A_KEYSTORE`,
+`P2A_KEYSTORE_PASSWORD`, `P2A_KEY_ALIAS`, and `P2A_KEY_PASSWORD` through Gradle
+properties (prefer private user Gradle properties) or environment variables.
+Properties take precedence. Partial signing configuration fails with a message;
+secrets are never printed by the build script.
+
+The core tests need no Android SDK. After dependencies have been cached they
+also run offline with `./gradlew :core:test --offline`.
+
+## On the phone
+
+Start the server from the app and grant shared storage access. On Android 11+
+this is All files access; API 26–29 requests READ_EXTERNAL_STORAGE and uses
+legacy shared storage. Notification permission is requested on API 33+.
+Permission labels are read from Android again on resume; opening a settings
+page never marks a permission as granted. The Xiaomi/Redmi/POCO autostart link
+is best-effort with an app-details fallback; its state cannot be detected.
+
+The foreground service listens on all interfaces, default port 8765, with a
+persistent low-importance notification containing its best address and a Stop
+action. The screen lists IPv4 pairing links, preferring Wi-Fi/Ethernet, then
+addresses in the Tailscale CGNAT range, then other interfaces. Copy a link and
+run `p2a pair '<copied link>'` on the computer. Tokens are masked until Show;
+clipboard copies contain the complete token and are marked sensitive on API
+33+. Regeneration requires confirmation and invalidates the previous token
+immediately, including while the server runs. Preferences are private and
+backup is disabled, including explicit preference exclusions for Android 12+
+cloud backup and device transfer.
+
+Port accepts 1024–65535 and restarts a running server when changed. Start on
+boot defaults to enabled after the first successful start; an explicit switch
+choice persists. Boot and package replacement can start the `specialUse`
+foreground service. Android or OEM background restrictions can still prevent
+startup; errors appear on the app screen. Keep awake defaults off; enabling it
+holds a partial CPU wake lock and Wi-Fi lock until the service stops. API 29+
+uses low-latency Wi-Fi mode, older versions high-performance mode. Android may
+ignore low-latency requests while the screen is off or the app is backgrounded;
+this setting is not a connectivity guarantee.
+
+Read-only does not mean private on an untrusted network: anyone with the token
+and network reachability can read shared files. Plain HTTP is unencrypted;
+prefer Tailscale or trusted Wi-Fi. Android/data and Android/obb remain forbidden.
+
+## Desktop development server
+
+The isolated `dev` source set does not enter the main core jar or APK. Supply a
+readable directory, port (0 chooses an ephemeral port), and a nonempty test token:
+
+```sh
+./gradlew :core:devServer --args="--root $ROOT --port $PORT --token $TOKEN"
+```
+
+The process prints a `p2a://` pairing link for localhost and blocks until stopped
+with Ctrl-C. Use it with the normal PC CLI (`pair`, `ping`, `ls`, `find`, `get`,
+`discover`); it exposes only the supplied root and the same read-only API.
+
+## Emulator smoke test
+
+With an API 35 emulator running, install the debug APK and grant storage access:
+
+```sh
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell appops set dev.phone2agent MANAGE_EXTERNAL_STORAGE allow
+adb shell pm grant dev.phone2agent android.permission.POST_NOTIFICATIONS
+adb shell mkdir -p /sdcard/MIUI/sound_recorder/call_rec
+adb push "$FIXTURE" /sdcard/MIUI/sound_recorder/call_rec/
+adb shell am start -n dev.phone2agent/.MainActivity --ez autostart true
+adb forward tcp:18765 tcp:8765
+```
+
+`autostart` is honoured only by debug builds. The service remains unexported;
+release builds ignore that extra. For a disposable emulator only, read its token
+with `adb shell run-as dev.phone2agent cat shared_prefs/phone2agent.xml`, without
+logging or publishing it. Configure the PC client URL to `http://127.0.0.1:18765`
+and token through its `token_env` setting. Check `p2a ping`, `p2a ls`,
+`p2a find --ext mp3`, `p2a get`, and `p2a discover`; `p2a ls Android/data` must
+fail cleanly with 403. Inspect the screen using `adb exec-out screencap -p`, keep
+screenshots locally outside tracked files, then remove the forward and stop
+the emulator. Also exercise Start/Stop, token regeneration, permissions after
+returning from settings, port restart, and dark mode.
 
 ## Integration
 
