@@ -37,6 +37,7 @@ min_age_s = 60
 [sync]
 interval_s = 300               # daemon loop period
 backfill_days = 7              # first scan only looks this far back
+timezone = ""                  # IANA zone of timestamps in file names; empty = the phone's reported zone
 
 [asr]
 backend = "funasr"             # funasr | faster-whisper | command | none

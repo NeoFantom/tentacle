@@ -40,6 +40,8 @@ project descriptions, and mark uncertain names with "(?)".
   updating a plan, writing a message draft). `instructions` must be
   self-contained (the agent will NOT see the transcript). Do not include actions
   that only a human can do (calling someone, attending a meeting) — those are
-  `todo` items. Empty array if nothing fits.
+  `todo` items. Filing `routes[].notes_markdown` into the project and updating
+  its TODO / progress docs already happens automatically — never propose an
+  action for that. Empty array if nothing fits.
 - Don't invent facts. If the call is personal / irrelevant to any project, return
   empty `routes` and `actions` and keep `items` minimal.

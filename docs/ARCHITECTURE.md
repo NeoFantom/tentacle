@@ -80,7 +80,7 @@ Pull is idempotent: files stay on the phone, the PC remembers what it fetched.
 
 | Method & path | Query | Response |
 |---|---|---|
-| `GET /v1/ping` | — | `{"app":"phone2agent","api":1,"version":"0.1.0","device":"<manufacturer model>","android_sdk":35,"roots":[{"id":"primary","path":"/storage/emulated/0","label":"Internal"}],"all_files_access":true,"time_ms":...}` |
+| `GET /v1/ping` | — | `{"app":"phone2agent","api":1,"version":"0.1.0","device":"<manufacturer model>","android_sdk":35,"roots":[{"id":"primary","path":"/storage/emulated/0","label":"Internal"}],"all_files_access":true,"time_ms":...,"timezone":"Asia/Shanghai"}` — `time_ms`/`timezone` are the phone's clock and IANA zone; the PC uses them for file-age checks and for interpreting timestamps in file names |
 | `GET /v1/ls` | `path`, `hidden=0\|1` (default 0) | `{"path":..., "entries":[Entry...]}` sorted dirs first then name |
 | `GET /v1/stat` | `path` | `Entry` |
 | `GET /v1/find` | `root` (path, default primary), `ext` (comma list, case-insensitive, no dot), `name` (case-insensitive substring), `since_ms`, `until_ms`, `type=file\|dir\|any` (default file), `max_depth` (default 12), `limit` (default 500, max 5000), `sort=mtime_desc\|mtime_asc\|name` (default mtime_desc) | `{"root":..., "entries":[Entry...], "truncated": bool}`. Walk skips `Android/data`, `Android/obb`, hidden dirs unless `hidden=1`; never follows symlinks out of roots. |
@@ -224,7 +224,7 @@ skip files younger than `min_age_s` (still being written); insert unseen
 `recordings/<YYYY-MM>/`, compute sha256, parse metadata with the source's
 `name_pattern` regex (named groups `app`, `counterpart`, `ts` with `ts_format`),
 → `downloaded`. Duplicate content (same sha256 already stored) → `skipped`.
-`sync.backfill_days` bounds the very first scan. Phone unreachable is not an
+`sync.backfill_days` bounds the very first scan. File age (`min_age_s`) is measured against the phone's `time_ms` from `ping` (clocks may differ). Timestamps parsed from file names are in the phone's zone: `sync.timezone` if set, else the `timezone` reported by `ping`, else the PC's local zone; `started_at` is stored with that zone's offset. Phone unreachable is not an
 error for recordings: log an event and return.
 
 ### 5.5 ASR — `asr/`

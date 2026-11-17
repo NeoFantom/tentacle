@@ -67,6 +67,7 @@ class SourceConfig:
 class SyncConfig:
     interval_s: int = 300
     backfill_days: int = 7
+    timezone: str = ""
 
 
 @dataclass
