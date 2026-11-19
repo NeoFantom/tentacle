@@ -2,9 +2,10 @@
 
 `:app` is a framework-only Android shell for the JVM `:core` file server.
 It uses Kotlin and Android framework views, follows the system light/dark
-appearance through DeviceDefault themes, and has no AndroidX, Material or
-third-party runtime libraries. Kotlin's standard library is the only runtime
-library beyond `:core` and Android. The application id and label are
+appearance through DeviceDefault themes, and has no AndroidX or Material
+dependency. `com.github.mwiede:jsch` is the app's single third-party runtime
+dependency and implements its SSH reverse tunnel; `:core` remains pure JVM.
+The application id and label are
 `dev.tentacle` and `Tentacle`; version is `0.2.0` (code 2), minimum API 26,
 compile/target API 35. JDK 21 builds Java 17 bytecode; JUnit is test-only.
 
@@ -17,18 +18,26 @@ Do not commit local SDK paths, APKs, signing material or build directories.
 
 ```sh
 ./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
-./gradlew :app:assembleRelease
+./gradlew :app:assembleRelease -Ptentacle.updateRepo=<owner>/<repo>
 ```
 
 APK outputs are `app/build/outputs/apk/debug/app-debug.apk` and
-`app/build/outputs/apk/release/app-release-unsigned.apk` (or `app-release.apk`
-when signed). Release is unsigned
+`app/build/outputs/apk/release/tentacle-<versionName>.apk`. The release build
+also writes `tentacle-<versionName>.apk.sha256` beside it. Release is unsigned
 when signing settings are absent; debug uses normal Android debug signing.
 To sign a release, provide all four of `TENTACLE_KEYSTORE`,
-`TENTACLE_KEYSTORE_PASSWORD`, `TENTACLE_KEY_ALIAS`, and `TENTACLE_KEY_PASSWORD` through Gradle
-properties (prefer private user Gradle properties) or environment variables.
-Properties take precedence. Partial signing configuration fails with a message;
-secrets are never printed by the build script.
+`TENTACLE_KEYSTORE_PASSWORD`, `TENTACLE_KEY_ALIAS`, and
+`TENTACLE_KEY_PASSWORD` through Gradle properties (prefer private user Gradle
+properties) or environment variables. Properties take precedence. Partial
+signing configuration fails with a message; secrets are never printed by the
+build script. The `tentacle.updateRepo` property is an `owner/repo` pair used
+to construct the default GitHub Releases update source. Omitting it disables
+updates by default, which keeps fork builds independent.
+
+From the repository root, `scripts/release.sh` performs the signed build and
+creates `v<version>` with the APK and checksum through an authenticated `gh`.
+It requires the four signing environment variables above and refuses to run
+from a dirty worktree. It derives `owner/repo` from the current GitHub remote.
 
 The core tests need no Android SDK. After dependencies have been cached they
 also run offline with `./gradlew :core:test --offline`.
@@ -52,6 +61,17 @@ clipboard copies contain the complete token and are marked sensitive on API
 immediately, including while the server runs. Preferences are private and
 backup is disabled, including explicit preference exclusions for Android 12+
 cloud backup and device transfer.
+
+The optional SSH mode keeps an outbound reverse tunnel to the owner's server
+while the file server runs. It uses an app-private ECDSA key and pins the SSH
+host key on first use. See `docs/CONNECT.md` for the server-side authorized key
+and nginx setup. The optional public HTTPS URL is included as another pairing
+link; the app does not infer it from the SSH host.
+
+The app can check GitHub Releases for signed APK updates. Release builds use
+the repository supplied by `tentacle.updateRepo`; users can override the update
+source in settings. Android always asks the user to confirm installation, and
+may first require the app to be allowed to install unknown apps.
 
 Port accepts 1024–65535 and restarts a running server when changed. Start on
 boot defaults to enabled after the first successful start; an explicit switch

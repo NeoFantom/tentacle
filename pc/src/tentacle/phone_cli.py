@@ -113,7 +113,15 @@ def _pair(args) -> dict:
     cfg = config.load(path)
     config.set_values(path, "phone", {"url": url, "token": token})
     cfg.phone.url, cfg.phone.token = url, token
-    return PhoneClient(cfg.phone).ping()
+    client = PhoneClient(cfg.phone)
+    return _ping_result(client)
+
+
+def _ping_result(client: PhoneClient) -> dict:
+    result = dict(client.ping())
+    result["base_url"] = client.url
+    result["round_trip_ms"] = round(client.last_round_trip_ms or 0.0, 1)
+    return result
 
 
 def _audio_extensions(cfg) -> list[str]:
@@ -187,7 +195,7 @@ def _run(args, cfg) -> int:
         else:
             client = PhoneClient(cfg.phone)
             if args.cmd == "ping":
-                result = client.ping()
+                result = _ping_result(client)
             elif args.cmd == "ls":
                 result = client.ls(args.path, hidden=args.hidden)
             elif args.cmd == "stat":
@@ -219,6 +227,7 @@ def _run(args, cfg) -> int:
             _emit(result)
         elif args.cmd in {"ping", "pair"}:
             print(f"{result['device']}  API {result['api']}  version {result['version']}")
+            print(f"{result['base_url']}  {result['round_trip_ms']:.1f} ms round trip")
         elif args.cmd in {"ls", "find", "recent"}:
             if args.cmd == "ls":
                 display_zone = None if args.local_time else client.phone_timezone()
@@ -278,7 +287,8 @@ def doctor(cfg) -> list[tuple[str, bool, str]]:
         reply = client.ping()
         if not reply.get("all_files_access"):
             raise ValueError("phone has not granted all-files access")
-        return f"device={reply.get('device', 'unknown')}"
+        return (f"url={client.url}, device={reply.get('device', 'unknown')}, "
+                f"round_trip_ms={client.last_round_trip_ms or 0.0:.1f}")
 
     check("config", check_config)
     check("data_dir", writable_data_dir)

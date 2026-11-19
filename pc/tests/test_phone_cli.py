@@ -59,7 +59,10 @@ class PhoneCliTests(unittest.TestCase):
         return json.loads(out)
 
     def test_ping_ls_stat_and_human_columns(self):
-        self.assertEqual(self.run_json("ping")["app"], "tentacle")
+        ping = self.run_json("ping")
+        self.assertEqual(ping["app"], "tentacle")
+        self.assertEqual(ping["base_url"], self.server.url)
+        self.assertGreaterEqual(ping["round_trip_ms"], 0)
         listing = self.run_json("ls")
         self.assertNotIn(".hidden", [entry["name"] for entry in listing["entries"]])
         self.assertIn(".hidden", [entry["name"] for entry in self.run_json("ls", "-a")["entries"]])
@@ -73,6 +76,9 @@ class PhoneCliTests(unittest.TestCase):
             code, out, err = self.run_cli(*args)
             self.assertEqual((code, err), (0, ""))
             self.assertTrue(out.strip())
+            if command == "ping":
+                self.assertIn(self.server.url, out)
+                self.assertIn("ms round trip", out)
 
     def test_find_and_recent(self):
         found = self.run_json("find", "Recordings", "--ext", "AAC,m4a", "--since", "2d",
@@ -116,6 +122,12 @@ class PhoneCliTests(unittest.TestCase):
         self.assertEqual((code, err), (0, ""))
         self.assertIn("API 1", out)
         self.assertNotIn("token", out)
+
+        new_format = ("tentacle://pair?name=Test%20device&token=t&url=" +
+                      self.server.url.replace(":", "%3A").replace("/", "%2F"))
+        code, out, err = self.run_cli("pair", new_format, "--json")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["base_url"], self.server.url)
 
     def test_bounded_cat_of_large_file_closes_cleanly(self):
         root = Path(self.tmp.name) / "large-phone"
@@ -224,6 +236,11 @@ class PhoneCliTests(unittest.TestCase):
             ["config", "data_dir", "phone route", "phone ping", "source recordings", "ASR backend"],
         )
         self.assertTrue(all(item["ok"] for item in checks))
+        route = next(item for item in checks if item["check"] == "phone route")
+        ping = next(item for item in checks if item["check"] == "phone ping")
+        self.assertEqual(route["detail"], self.server.url)
+        self.assertIn(f"url={self.server.url}", ping["detail"])
+        self.assertRegex(ping["detail"], r"round_trip_ms=\d+\.\d")
 
     def test_error_exit_codes(self):
         code, out, err = self.run_cli("stat", "missing", "--json")

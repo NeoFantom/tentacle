@@ -8,10 +8,10 @@ import java.net.URLDecoder
 class PairingTest {
     @Test fun `CGNAT range boundaries identify Tailscale`() {
         for (host in listOf("100.64.0.1", "100.127.255.254")) {
-            assertEquals("Tailscale", Pairing.address(host, "vpn", false).label)
+            assertEquals(1, Pairing.address(host, "vpn", false).priority)
         }
         for (host in listOf("100.63.255.254", "100.128.0.1", "101.64.0.1")) {
-            assertTrue(Pairing.address(host, "vpn", false).label.startsWith("Other"))
+            assertEquals(2, Pairing.address(host, "vpn", false).priority)
         }
     }
 
@@ -26,8 +26,24 @@ class PairingTest {
         val device = "Example 设备 & +?#"
         val uri = URI(Pairing.uri("192.0.2.1", 8765, "example-token", device))
         assertEquals("tentacle", uri.scheme)
-        assertEquals(8765, uri.port)
-        assertEquals(device, URLDecoder.decode(uri.rawQuery.substringAfter("&name="), "UTF-8"))
-        assertEquals(2, uri.rawQuery.split('&').size)
+        assertEquals("pair", uri.host)
+        val fields = uri.rawQuery.split('&').associate {
+            val parts = it.split('=', limit = 2)
+            parts[0] to URLDecoder.decode(parts[1], "UTF-8")
+        }
+        assertEquals(device, fields["name"])
+        assertEquals("http://192.0.2.1:8765", fields["url"])
+        assertEquals(3, fields.size)
+    }
+    @Test fun `public HTTPS URL and token delimiters round trip`() {
+        val url = "https://example.com/tentacle/设备?q=a+b&x=1"
+        val token = "a+b&?=#"
+        val uri = URI(Pairing.uri(url, token, "设备"))
+        val fields = uri.rawQuery.split('&').associate {
+            val parts = it.split('=', limit = 2)
+            parts[0] to URLDecoder.decode(parts[1], "UTF-8")
+        }
+        assertEquals(url, fields["url"])
+        assertEquals(token, fields["token"])
     }
 }

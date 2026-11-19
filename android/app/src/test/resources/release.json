@@ -1,0 +1,9 @@
+{
+  "tag_name": "v2.3.4",
+  "name": "Tentacle 2.3.4",
+  "assets": [
+    {"name": "other.apk", "browser_download_url": "https://example.com/other.apk", "size": 123},
+    {"name": "tentacle-2.3.4.apk", "browser_download_url": "https://example.com/tentacle-2.3.4.apk", "size": 456},
+    {"name": "tentacle-2.3.4.apk.sha256", "browser_download_url": "https://example.com/tentacle-2.3.4.apk.sha256", "size": 80}
+  ]
+}

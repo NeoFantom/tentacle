@@ -1,17 +1,75 @@
 from __future__ import annotations
 
 import io
+import http.client
 import os
 import socket
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
+from urllib.parse import urlsplit
 
 from tentacle.config import PhoneConfig
 from tentacle.phone import PhoneClient, PhoneError, parse_pair_string
 
 from tests.fakephone import FakePhone
+
+
+class _PrefixProxyHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self):
+        self._forward()
+
+    def do_HEAD(self):
+        self._forward()
+
+    def _forward(self):
+        if not self.path.startswith("/tentacle/"):
+            self.send_error(404)
+            return
+        upstream = urlsplit(self.server.upstream)
+        connection = http.client.HTTPConnection(upstream.hostname, upstream.port, timeout=2)
+        headers = {key: value for key, value in self.headers.items()
+                   if key.lower() not in {"connection", "host"}}
+        connection.request(self.command, self.path[len("/tentacle"):], headers=headers)
+        response = connection.getresponse()
+        body = response.read()
+        self.send_response(response.status)
+        for key, value in response.getheaders():
+            if key.lower() not in {"connection", "date", "server", "transfer-encoding"}:
+                self.send_header(key, value)
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+        connection.close()
+
+    def log_message(self, _format, *_args):
+        pass
+
+
+class PrefixProxy:
+    def __init__(self, upstream: str):
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _PrefixProxyHandler)
+        self.server.upstream = upstream
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.server.server_port}/tentacle"
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_args):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
 
 
 class _Response:
@@ -38,6 +96,15 @@ class _Response:
 
 
 class PairStringTests(unittest.TestCase):
+    def test_new_pair_uri_preserves_encoded_https_prefix(self):
+        self.assertEqual(
+            parse_pair_string(
+                "tentacle://pair?name=My%20Phone&token=a%2Bb&"
+                "url=https%3A%2F%2Fexample.com%2Ftentacle"
+            ),
+            ("https://example.com/tentacle", "a+b", "My Phone"),
+        )
+
     def test_pair_uri(self):
         self.assertEqual(
             parse_pair_string("tentacle://phone.local:8765?token=a%2Bb&name=My%20Phone"),
@@ -60,6 +127,12 @@ class PairStringTests(unittest.TestCase):
         for value in (
             "tentacle://phone.local:8765?name=Phone",
             "tentacle://phone.local?token=t",
+            "tentacle://pair?name=Phone&token=t",
+            "tentacle://pair?name=Phone&url=https%3A%2F%2Fexample.com",
+            "tentacle://user@pair?token=t&url=https%3A%2F%2Fexample.com",
+            "tentacle://pair?token=a&token=b&url=https%3A%2F%2Fexample.com",
+            "tentacle://pair?token=t&url=https%3A%2F%2Fexample.com&url=http%3A%2F%2Fexample.com",
+            "tentacle://pair?token=t&url=tentacle%3A%2F%2Fphone.local%3A8765%3Ftoken%3Dnested",
             "ftp://phone.local:8765",
             "http://phone.local",
             "http://phone.local:8765/path?query=invalid",
@@ -152,6 +225,18 @@ class PhoneClientTests(unittest.TestCase):
         self.assertEqual(request.get_header("User-agent"), "tentacle/0.2.0")
         self.assertEqual(opened.call_args.kwargs["timeout"], 120)
         self.assertEqual(opened.call_args_list[0].kwargs["timeout"], 3)
+
+    def test_path_prefix_proxy_covers_requests_downloads_and_errors(self):
+        with PrefixProxy(self.server.url) as proxy:
+            client = PhoneClient(PhoneConfig(url=proxy.url, token="t", timeout_s=2))
+            self.assertEqual(client.ping()["api"], 1)
+            self.assertEqual(client.stat("Music/hello.txt")["size"], 11)
+            destination = self.root / "prefixed-download.txt"
+            client.download("Music/hello.txt", destination)
+            self.assertEqual(destination.read_bytes(), b"hello phone")
+            with self.assertRaises(PhoneError) as caught:
+                client.stat("missing.txt")
+            self.assertEqual((caught.exception.code, caught.exception.status), ("not_found", 404))
 
     def test_find_filters_depth_hidden_sort_and_truncation(self):
         shallow = self.client.find(root="Music", type="file", max_depth=1, sort="name")

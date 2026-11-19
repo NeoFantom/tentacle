@@ -11,8 +11,8 @@ serves a read-only HTTP API; each PC command does its work and exits. There is n
 PC daemon, automatic analysis, project filing, or task queue.
 
 The automation implementation is preserved on `experimental/automation`.
-Connectivity options are documented in [CONNECT.md](CONNECT.md); Android SSH
-tunnel integration is planned separately.
+Connectivity options, including the Android SSH reverse tunnel, are documented
+in [CONNECT.md](CONNECT.md).
 
 ## 2. Components and ownership
 
@@ -28,13 +28,16 @@ tunnel integration is planned separately.
 | `skills/tentacle/SKILL.md` | Agent workflow for phone files and calls. |
 
 The PC core uses Python ≥ 3.11 standard library only. Optional ASR libraries are
-lazy imports declared as package extras. Android uses Kotlin with no third-party
-runtime dependencies. The phone records nothing itself; existing recorders write
+lazy imports declared as package extras. Android uses Kotlin;
+`com.github.mwiede:jsch` is the sole third-party runtime dependency and is
+confined to `:app`. The phone records nothing itself; existing recorders write
 the files exposed by this toolkit. The PC never writes to the phone.
 
 ## 3. Phone HTTP API v1 (contract between `android/` and `pc/`)
 
-- Base: `http://<host>:<port>` (default port **8765**). All endpoints under `/v1/`.
+- Direct local base: `http://<host>:<port>` (default port **8765**). An HTTPS
+  reverse proxy may add a path prefix, such as `https://example.com/tentacle`.
+  All API endpoints remain under `/v1/` relative to the configured base URL.
 - Auth: header `Authorization: Bearer <token>` on every request, compared in
   constant time. Missing/wrong → `401 {"error":"unauthorized"}`.
 - Token: 32 random bytes, base64url without padding, generated on first launch,
@@ -90,9 +93,16 @@ actual service state when resumed and observes starts/stops while visible.
 Permission guidance reports actual grants, including all-files access,
 notifications, battery optimisation and vendor autostart settings.
 
-Pairing format is `tentacle://<host>:<port>?token=<token>&name=<device>`, one line
-per candidate non-loopback IPv4 address. Settings live in `SharedPreferences`.
-No SSH client or tunnel settings are implemented in this version.
+Pairing format is
+`tentacle://pair?name=<urlencoded-device>&token=<token>&url=<urlencoded-base-url>`,
+one line per candidate non-loopback IPv4 address. When configured, the public
+HTTPS URL contributes another line. Settings live in `SharedPreferences`.
+
+The app can maintain an ECDSA-authenticated SSH reverse tunnel while the local
+server runs. Its private key remains in app-private storage; its host-key trust,
+connection settings, public URL and status follow [CONNECT.md](CONNECT.md).
+The app also checks a configured GitHub-compatible latest-release endpoint and
+installs only APKs signed by the running application's certificate.
 
 ## 5. PC package and CLI
 

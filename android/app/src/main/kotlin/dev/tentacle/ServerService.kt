@@ -22,9 +22,23 @@ import android.os.PowerManager
 import dev.tentacle.core.FileApi
 import dev.tentacle.core.HttpServer
 import dev.tentacle.core.PingInfo
+import dev.tentacle.tunnel.TunnelManager
+import dev.tentacle.tunnel.TunnelStatus
+import dev.tentacle.update.AppUpdater
 
 class ServerService : Service() {
     private lateinit var settings: Settings
+    private var tunnel: TunnelManager? = null
+    private var tunnelSubscription: AutoCloseable? = null
+    private val updateCheck = object : Runnable {
+        override fun run() {
+            AppUpdater.check(this@ServerService)
+            handler.postDelayed(this, 12 * 60 * 60 * 1000L)
+        }
+    }
+
+    override fun attachBaseContext(base: Context) = super.attachBaseContext(AppLanguage.wrap(base))
+
     private var server: HttpServer? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -35,8 +49,11 @@ class ServerService : Service() {
         super.onCreate()
         settings = Settings(this)
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL, "File server", NotificationManager.IMPORTANCE_LOW),
+            NotificationChannel(CHANNEL, getString(R.string.file_channel), NotificationManager.IMPORTANCE_LOW),
         )
+        AppUpdater.initialize(this)
+        handler.postDelayed(updateCheck, 12 * 60 * 60 * 1000L)
+        tunnelSubscription = TunnelStatus.observe { handler.post { if (server?.isRunning == true) updateNotification() } }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -45,7 +62,7 @@ class ServerService : Service() {
             return START_NOT_STICKY
         }
         try {
-            val notification = notification("Starting file server…")
+            val notification = notification(getString(R.string.starting))
             if (Build.VERSION.SDK_INT >= 34) {
                 startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             } else startForeground(NOTIFICATION_ID, notification)
@@ -71,12 +88,18 @@ class ServerService : Service() {
                 next.start()
                 settings.markStarted()
             }
+            if (tunnel == null) {
+                tunnel = TunnelManager(this, settings) {
+                    handler.post { if (server?.isRunning == true) updateNotification() }
+                }.also { it.start(settings.port) }
+            }
+            if (intent?.action == ACTION_TRUST_HOST) tunnel?.trustNewHostKey()
             updateLocks()
             ServerStatus.publish(ServerStatus.State(running = true))
             updateNotification()
             watchNetworks()
         } catch (e: Exception) {
-            ServerStatus.publish(ServerStatus.State(error = e.message ?: e.javaClass.simpleName))
+            ServerStatus.publish(ServerStatus.State(error = "server_failed"))
             stopSelf()
             return START_NOT_STICKY
         }
@@ -102,13 +125,17 @@ class ServerService : Service() {
     }
 
     private fun updateNotification() {
-        val host = DeviceEnvironment.addresses(this).firstOrNull()?.host ?: "no network"
+        refreshNotificationChannel(this)
+        val localized = AppLanguage.wrap(applicationContext)
+        val host = DeviceEnvironment.addresses(this).firstOrNull()?.host ?: localized.getString(R.string.no_network_short)
         getSystemService(NotificationManager::class.java).notify(
-            NOTIFICATION_ID, notification("Serving on $host:${settings.port}"),
+            NOTIFICATION_ID, notification(localized.getString(R.string.notification_status,
+                localized.getString(R.string.serving, host, settings.port), TunnelStatus.value.display(localized))),
         )
     }
 
     private fun notification(message: String): Notification {
+        val localized = AppLanguage.wrap(applicationContext)
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -116,13 +143,13 @@ class ServerService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_server)
-            .setContentTitle(getString(R.string.app_name))
+            .setContentTitle(localized.getString(R.string.app_name))
             .setContentText(message)
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_SERVICE)
-            .addAction(Notification.Action.Builder(null, "Stop", stop).build())
+            .addAction(Notification.Action.Builder(null, localized.getString(R.string.stop), stop).build())
             .build()
     }
 
@@ -146,6 +173,8 @@ class ServerService : Service() {
     }
 
     private fun stopServer() {
+        tunnel?.close()
+        tunnel = null
         try { server?.stop() } finally {
             server = null
             releaseLocks()
@@ -155,6 +184,8 @@ class ServerService : Service() {
     override fun onDestroy() {
         networkCallback?.let { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) }
         networkCallback = null
+        tunnelSubscription?.close()
+        tunnelSubscription = null
         handler.removeCallbacksAndMessages(null)
         stopServer()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -166,17 +197,29 @@ class ServerService : Service() {
 
     companion object {
         private const val ACTION_STOP = "dev.tentacle.STOP"
+        private const val ACTION_TRUST_HOST = "dev.tentacle.TRUST_HOST"
         private const val ACTION_RESTART = "dev.tentacle.RESTART"
         private const val CHANNEL = "file_server"
         private const val NOTIFICATION_ID = 1
+        fun refreshNotificationChannel(context: Context) {
+            context.getSystemService(NotificationManager::class.java).createNotificationChannel(
+                NotificationChannel(CHANNEL, AppLanguage.wrap(context).getString(R.string.file_channel),
+                    NotificationManager.IMPORTANCE_LOW))
+        }
+
         fun start(context: Context, restart: Boolean = false) {
             try {
                 context.startForegroundService(Intent(context, ServerService::class.java).apply {
                     if (restart) action = ACTION_RESTART
                 })
             } catch (e: Exception) {
-                ServerStatus.publish(ServerStatus.State(error = e.message ?: e.javaClass.simpleName))
+                ServerStatus.publish(ServerStatus.State(error = "server_failed"))
             }
+        }
+
+        fun trustNewHostKey(context: Context) {
+            if (ServerStatus.value.running) context.startForegroundService(
+                Intent(context, ServerService::class.java).setAction(ACTION_TRUST_HOST))
         }
 
         fun stop(context: Context) { context.stopService(Intent(context, ServerService::class.java)) }

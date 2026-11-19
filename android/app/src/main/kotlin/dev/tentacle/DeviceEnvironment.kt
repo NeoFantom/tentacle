@@ -35,7 +35,7 @@ object DeviceEnvironment {
                 StorageRoot(id, directory, volume.getDescription(context))
             }.sortedBy { if (it.id == "primary") 0 else 1 }
     } else {
-        listOf(StorageRoot("primary", Environment.getExternalStorageDirectory(), "Internal"))
+        listOf(StorageRoot("primary", Environment.getExternalStorageDirectory(), context.getString(R.string.internal_storage)))
     }
 
     fun addresses(context: Context): List<Pairing.Address> {

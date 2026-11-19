@@ -3,7 +3,13 @@
 # Paths accept ~ and $ENV_VARS.
 
 [phone]
-# Filled in by `tentacle pair 'tentacle://host:port?token=...'`.
+# Choose one connection mode; the phone API and token are the same in every mode:
+# LAN: the phone's Wi-Fi address and local server port.
+# USB: the adb-forwarded loopback address and local server port.
+# Tailscale: the phone's 100.x address and local server port.
+# Own server: an HTTPS URL with an optional path prefix, for example
+# https://example.com/tentacle (nginx forwards it to the SSH reverse tunnel).
+# The app's pairing link fills in both url and token with `tentacle pair`.
 url = ""                       # e.g. "https://example.com/tentacle"
 token = ""                     # inline token, or use one of:
 token_file = ""                # file containing the token

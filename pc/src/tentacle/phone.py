@@ -10,6 +10,7 @@ import http.client
 import json
 import re
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,6 +45,27 @@ def parse_pair_string(text: str, token: str | None = None) -> tuple[str, str, st
     except ValueError as exc:
         raise ValueError("invalid pairing address") from exc
 
+    if parsed.scheme == "tentacle" and parsed.hostname == "pair" and port is None:
+        if parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.fragment:
+            raise ValueError("invalid pair string")
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if any(len(query.get(field, [])) > 1 for field in ("token", "url", "name")):
+            raise ValueError("pair string contains duplicate fields")
+        pair_token = query.get("token", [""])[0]
+        pair_url = query.get("url", [""])[0]
+        if not pair_token:
+            raise ValueError("pair string has no token")
+        if not pair_url:
+            raise ValueError("pair string has no URL")
+        try:
+            pair_url_scheme = urllib.parse.urlsplit(pair_url).scheme
+        except ValueError as exc:
+            raise ValueError("invalid phone URL") from exc
+        if pair_url_scheme not in {"http", "https"}:
+            raise ValueError("pair string URL must use http or https")
+        base, _, _ = parse_pair_string(pair_url, pair_token)
+        return base, pair_token, query.get("name", [""])[0]
+
     if parsed.scheme == "tentacle":
         if not parsed.hostname or port is None or parsed.username or parsed.password:
             raise ValueError("pair string must contain host and port")
@@ -77,6 +99,7 @@ class PhoneClient:
         self.timeout = float(phone_cfg.timeout_s)
         self.find_timeout = float(getattr(phone_cfg, "find_timeout_s", 120))
         self._ping_cache: dict[str, Any] | None = None
+        self.last_round_trip_ms: float | None = None
         if phone_cfg.use_system_proxy:
             self._opener = urllib.request.build_opener()
         else:
@@ -155,7 +178,9 @@ class PhoneClient:
 
     def ping(self) -> dict[str, Any]:
         if self._ping_cache is None:
+            started = time.perf_counter()
             reply = self._json("ping")
+            self.last_round_trip_ms = (time.perf_counter() - started) * 1000
             if reply.get("app") != "tentacle":
                 raise PhoneError("wrong_app", "configured URL is not a Tentacle phone server", None)
             if reply.get("api") != 1:

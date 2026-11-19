@@ -17,11 +17,14 @@ the single source of truth for module boundaries and contracts.
   `add_commands(subparsers)`).
 - PC core: Python ≥ 3.11 standard library only. Optional heavy deps (ASR) only
   inside their backend, imported lazily, declared as extras in `pyproject.toml`.
-- Android: Kotlin, no third-party runtime dependencies (JUnit for tests is ok).
+- Android: Kotlin. `com.github.mwiede:jsch` is the single allowed third-party
+  runtime dependency and belongs only in `:app`; `:core` stays pure JVM with no
+  runtime dependencies. JUnit is test-only.
 - Every module ships tests that run offline and fast:
   `cd pc && .venv/bin/python -m unittest discover -s tests` and
   `cd android && ./gradlew test`.
-- English for code, comments, CLI messages, and docs.
+- English for code, comments, CLI messages, and docs. Android user-visible text
+  is localized in English and Simplified Chinese string resources.
 - Never commit secrets, recordings, transcripts, or build outputs.
 - Don't `git commit`; the maintainer reviews and commits.
 
@@ -34,5 +37,5 @@ the single source of truth for module boundaries and contracts.
 - PC package and console command: `tentacle`. Android packages:
   `dev.tentacle` and `dev.tentacle.core`. The agent skill lives in
   `skills/tentacle/SKILL.md`.
-- Keep connection guidance in `docs/CONNECT.md`; Android SSH-tunnel
-  implementation is a separate task.
+- Keep connection guidance in `docs/CONNECT.md`; it is the contract for the
+  Android SSH-tunnel implementation.
