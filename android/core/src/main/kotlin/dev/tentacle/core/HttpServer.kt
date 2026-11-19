@@ -43,7 +43,7 @@ class HttpServer(
         val socket = ServerSocket()
         try {
             socket.reuseAddress = true
-            socket.bind(InetSocketAddress(bind, port))
+            bindWithRetry(socket)
             val pool = ThreadPoolExecutor(
                 8, 8, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(32),
                 { task -> Thread(task, "tentacle-http-worker").apply { isDaemon = true } },
@@ -71,8 +71,25 @@ class HttpServer(
         clients.forEach { close(it) }
         workers?.shutdownNow()
         workers = null
+        // Android releases a listening socket only once the thread blocked in
+        // accept() has been woken; wait for it so an immediate restart can bind.
+        acceptThread?.let { if (it !== Thread.currentThread()) it.join(2_000) }
         acceptThread = null
         log("HTTP server stopped")
+    }
+
+    /** A just-closed listener on the same port can linger briefly (restart); retry for up to 2 s. */
+    private fun bindWithRetry(socket: ServerSocket) {
+        var attempt = 0
+        while (true) {
+            try {
+                socket.bind(InetSocketAddress(bind, port))
+                return
+            } catch (e: java.net.BindException) {
+                if (port == 0 || ++attempt >= 10) throw e
+                Thread.sleep(200)
+            }
+        }
     }
 
     private fun accept(socket: ServerSocket, pool: ThreadPoolExecutor) {

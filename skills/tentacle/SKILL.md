@@ -49,6 +49,10 @@ Start with a likely folder and narrow filters for large storage trees.
 locations and suggests source settings. Android blocks `Android/data` and
 `Android/obb`; a 403 does not imply those directories are empty.
 
+When the phone has several addresses (`phone.urls`, e.g. built-in Tailscale,
+Wi-Fi, own server), every command picks a working one automatically;
+`tentacle ping` lists each address with its result and the chosen path.
+
 Exit codes: `0` success (including an empty listing), `1` operational failure,
 `2` usage/configuration error or missing pairing, `130` interrupted. If ping
 fails, report the error and relevant connection/service state; stop repeated

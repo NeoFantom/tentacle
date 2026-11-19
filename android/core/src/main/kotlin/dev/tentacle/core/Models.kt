@@ -47,13 +47,15 @@ data class PingInfo(
     val allFilesAccess: Boolean,
     val roots: List<StorageRoot>,
     val timezone: String,
+    /** Optional, additive: read-only embedded Tailscale summary, e.g. {"state":"running","ip":"100.64.0.1"}. */
+    val tailnet: Map<String, Any>? = null,
 ) {
-    fun toJson(timeMs: Long = System.currentTimeMillis()): Map<String, Any> = linkedMapOf(
+    fun toJson(timeMs: Long = System.currentTimeMillis()): Map<String, Any> = linkedMapOf<String, Any>(
         "app" to "tentacle", "api" to 1, "version" to version, "device" to device,
         "android_sdk" to androidSdk,
         "roots" to roots.map {
             linkedMapOf("id" to it.id, "path" to it.path.canonicalPath, "label" to it.label)
         },
         "all_files_access" to allFilesAccess, "time_ms" to timeMs, "timezone" to timezone,
-    )
+    ).apply { tailnet?.let { put("tailnet", it) } }
 }

@@ -137,6 +137,35 @@ class HttpServerTest {
         assertTrue(response.text.contains("\"id\":\"primary\""))
         assertTrue(Regex("\\\"time_ms\\\":\\d+").containsMatchIn(response.text))
         assertTrue(response.text.contains("\"timezone\":\"Asia/Shanghai\""))
+        assertFalse(response.text.contains("\"tailnet\""))
+    }
+
+    @Test
+    fun `a fixed port can be restarted immediately and repeatedly`() {
+        val port = java.net.ServerSocket(0).use { it.localPort }
+        val fixed = HttpServer(port = port, bind = loopback, tokenProvider = { token },
+            api = FileApi(listOf(StorageRoot("primary", root.toFile(), "Internal"))),
+            info = { PingInfo("t", "d", 35, true, emptyList(), "UTC") })
+        try {
+            repeat(20) {
+                fixed.start()
+                Socket(loopback, port).close()
+                fixed.stop()
+            }
+            fixed.start()
+            assertEquals(port, fixed.boundPort)
+        } finally {
+            fixed.stop()
+        }
+    }
+
+    @Test
+    fun `ping info adds the optional tailnet summary only when supplied`() {
+        val info = PingInfo("0.3.0", "Test Device", 35, true, emptyList(), "UTC",
+            tailnet = linkedMapOf("state" to "running", "ip" to "100.64.0.1"))
+        assertEquals("{\"app\":\"tentacle\",\"api\":1,\"version\":\"0.3.0\",\"device\":\"Test Device\"," +
+            "\"android_sdk\":35,\"roots\":[],\"all_files_access\":true,\"time_ms\":5,\"timezone\":\"UTC\"," +
+            "\"tailnet\":{\"state\":\"running\",\"ip\":\"100.64.0.1\"}}", Json.stringify(info.toJson(5)))
     }
 
     @Test

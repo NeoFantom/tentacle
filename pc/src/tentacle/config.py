@@ -24,6 +24,7 @@ def _expand(p: str) -> str:
 @dataclass
 class PhoneConfig:
     url: str = ""
+    urls: list[str] = field(default_factory=list)  # ordered candidates; non-empty replaces url
     token: str = ""
     token_file: str = ""
     token_env: str = ""
@@ -201,6 +202,13 @@ def set_values(path: Path, section: str, values: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
     os.chmod(path, 0o600)
+
+
+def override_url(cfg: Config, url: str | None) -> None:
+    """Apply a command-line ``--url``: one fixed base URL, no path selection."""
+    if url:
+        cfg.phone.url = url.strip().rstrip("/")
+        cfg.phone.urls = []
 
 
 def masked(cfg: Config) -> dict:

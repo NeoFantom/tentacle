@@ -26,6 +26,8 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import dev.tentacle.tailnet.TailnetLogic
+import dev.tentacle.tailnet.TailnetStatus
 import dev.tentacle.tunnel.TunnelKeys
 import dev.tentacle.tunnel.TunnelStatus
 import dev.tentacle.tunnel.TunnelLogic
@@ -49,6 +51,13 @@ class MainActivity : Activity() {
     private lateinit var hostFingerprint: TextView
     private lateinit var updateStatusText: TextView
     private var tunnelSubscription: AutoCloseable? = null
+    private var tailnetSubscription: AutoCloseable? = null
+    private lateinit var tailnetStatusText: TextView
+    private lateinit var tailnetLogin: Button
+    private lateinit var tailnetLogout: Button
+    private lateinit var tailnetSwitch: Switch
+    private lateinit var tailnetKey: EditText
+    private var openLoginWhenReady = false
     private var updateSubscription: AutoCloseable? = null
 
     override fun attachBaseContext(base: Context) = super.attachBaseContext(AppLanguage.wrap(base))
@@ -77,7 +86,24 @@ class MainActivity : Activity() {
     }
 
     private fun handleDebugIntent(intent: Intent) {
-        if (BuildConfig.DEBUG && intent.getBooleanExtra("autostart", false)) ServerService.start(this)
+        if (!BuildConfig.DEBUG) return
+        // Test hooks for emulator end-to-end runs; release builds ignore them.
+        var tailnetChanged = false
+        intent.getStringExtra("tailnet_control_url")?.let { settings.tailnetControlUrl = it.trim(); tailnetChanged = true }
+        intent.getStringExtra("tailnet_auth_key")?.let { settings.tailnetAuthKey = it.trim(); tailnetChanged = true }
+        intent.getStringExtra("tailnet_hostname")?.let {
+            settings.tailnetHostname = TailnetLogic.sanitizeHostname(it); tailnetChanged = true
+        }
+        if (intent.hasExtra("tailnet_enabled")) {
+            settings.tailnetEnabled = intent.getBooleanExtra("tailnet_enabled", false); tailnetChanged = true
+        }
+        if (intent.getBooleanExtra("autostart", false)) ServerService.start(this, restart = tailnetChanged)
+        else if (tailnetChanged && ServerStatus.value.running) ServerService.start(this, restart = true)
+        if (tailnetChanged && ::tailnetSwitch.isInitialized) {
+            updating = true
+            tailnetSwitch.isChecked = settings.tailnetEnabled
+            updating = false
+        }
     }
 
     private fun handleUpdateIntent(intent: Intent) {
@@ -96,6 +122,13 @@ class MainActivity : Activity() {
         AppUpdater.refreshNotificationChannel(this)
         statusSubscription = ServerStatus.observe { runOnUiThread { refresh(it) } }
         tunnelSubscription = TunnelStatus.observe { runOnUiThread { refresh() } }
+        tailnetSubscription = TailnetStatus.observe { state -> runOnUiThread {
+            refresh()
+            if (openLoginWhenReady && state.loginUrl != null) {
+                openLoginWhenReady = false
+                openLoginUrl(state.loginUrl)
+            }
+        } }
         updateSubscription = AppUpdater.observe { state -> runOnUiThread {
             refresh()
             if (installRequested && state is UpdateState.Available) {
@@ -110,6 +143,8 @@ class MainActivity : Activity() {
     override fun onPause() {
         tunnelSubscription?.close()
         tunnelSubscription = null
+        tailnetSubscription?.close()
+        tailnetSubscription = null
         updateSubscription?.close()
         updateSubscription = null
         statusSubscription?.close()
@@ -163,6 +198,15 @@ class MainActivity : Activity() {
                 .setPositiveButton(getString(R.string.regenerate)) { _, _ -> settings.regenerateToken(); refresh() }.show()
         }
         pairs = column().also { content.addView(it) }
+        button(content, getString(R.string.copy_all_links)) {
+            val tailnet = TailnetStatus.value.takeIf { it.mode == TailnetStatus.Mode.RUNNING }?.ip
+            val addresses = DeviceEnvironment.addresses(this)
+            if (tailnet == null && addresses.isEmpty() && publicPairingUrl() == null) {
+                Toast.makeText(this, R.string.no_network, Toast.LENGTH_LONG).show()
+            } else copy(getString(R.string.pairing), Pairing.uriAll(tailnet?.let { "http://$it:${settings.port}" },
+                addresses, settings.port, publicPairingUrl(), settings.token, DeviceEnvironment.deviceName))
+        }
+        tailnetSection()
         connectionSection()
         section(getString(R.string.permissions))
         storageState = permission(getString(R.string.all_files), getString(R.string.open_settings)) { requestStorage() }
@@ -215,7 +259,10 @@ class MainActivity : Activity() {
         showToken.text = if (tokenVisible) getString(R.string.hide) else getString(R.string.show)
         pairs.removeAllViews()
         val addresses = DeviceEnvironment.addresses(this)
-        if (addresses.isEmpty()) text(pairs, getString(R.string.no_network))
+        val tailnet = TailnetStatus.value
+        if (tailnet.mode == TailnetStatus.Mode.RUNNING && tailnet.ip != null) {
+            pairingRow(getString(R.string.tailnet_builtin_short), "http://${tailnet.ip}:${settings.port}")
+        } else if (addresses.isEmpty()) text(pairs, getString(R.string.no_network))
         addresses.forEach { address ->
             val label = getString(when (address.priority) {
                 0 -> R.string.lan
@@ -224,9 +271,12 @@ class MainActivity : Activity() {
             })
             pairingRow(label, "http://${address.host}:${settings.port}")
         }
-        if (settings.tunnelHost.isNotBlank() && settings.tunnelUser.isNotBlank() && settings.publicUrl.isNotBlank()) {
-            pairingRow(getString(R.string.public_connection), settings.publicUrl)
-        }
+        publicPairingUrl()?.let { pairingRow(getString(R.string.public_connection), it) }
+        tailnetStatusText.text = tailnet.display(this)
+        tailnetLogin.isEnabled = tailnet.mode == TailnetStatus.Mode.NEEDS_LOGIN
+        tailnetLogout.isEnabled = tailnet.mode == TailnetStatus.Mode.RUNNING
+        tailnetKey.hint = getString(if (settings.tailnetAuthKey.isEmpty()) R.string.tailnet_auth_key_hint
+            else R.string.tailnet_auth_key_saved)
         tunnelStatusText.text = TunnelStatus.value.display(this)
         hostFingerprint.text = getString(R.string.host_fingerprint,
             (TunnelStatus.value.hostKeyFingerprint ?: settings.trustedHostFingerprint).ifEmpty { getString(R.string.not_trusted) })
@@ -243,6 +293,66 @@ class MainActivity : Activity() {
         updating = true
         boot.isChecked = settings.startOnBoot
         updating = false
+    }
+
+    private fun publicPairingUrl(): String? = settings.publicUrl.takeIf {
+        settings.tunnelHost.isNotBlank() && settings.tunnelUser.isNotBlank() && it.isNotBlank()
+    }
+
+    private fun tailnetSection() {
+        section(getString(R.string.tailnet_title))
+        text(content, getString(R.string.tailnet_help))
+        tailnetSwitch = toggle(getString(R.string.tailnet_enable), settings.tailnetEnabled) {
+            settings.tailnetEnabled = it
+            if (ServerStatus.value.running) ServerService.start(this, restart = true)
+            refresh()
+        }
+        tailnetStatusText = text(content, "")
+        val actions = row(content)
+        tailnetLogin = button(actions, getString(R.string.tailnet_login)) {
+            val url = TailnetStatus.value.loginUrl
+            if (url != null) openLoginUrl(url)
+            else {
+                openLoginWhenReady = true
+                ServerService.tailnetLogin(this)
+            }
+        }
+        tailnetLogout = button(actions, getString(R.string.tailnet_logout)) {
+            AlertDialog.Builder(this).setTitle(getString(R.string.tailnet_logout))
+                .setMessage(getString(R.string.tailnet_logout_message))
+                .setNegativeButton(getString(R.string.cancel), null)
+                .setPositiveButton(getString(R.string.tailnet_logout)) { _, _ -> ServerService.tailnetLogout(this) }
+                .show()
+        }
+        text(content, getString(R.string.tailnet_advanced), 15f).setTypeface(null, Typeface.BOLD)
+        val controlUrl = field(R.string.tailnet_control_url, settings.tailnetControlUrl)
+        controlUrl.hint = getString(R.string.tailnet_control_url_hint)
+        tailnetKey = field(R.string.tailnet_auth_key, "").apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val hostname = field(R.string.tailnet_hostname, settings.tailnetHostname)
+        button(content, getString(R.string.tailnet_save)) {
+            val url = controlUrl.text.toString().trim().trimEnd('/')
+            val name = TailnetLogic.sanitizeHostname(hostname.text.toString())
+            if (!TailnetLogic.validControlUrl(url) || name.isEmpty()) {
+                Toast.makeText(this, R.string.tailnet_invalid, Toast.LENGTH_LONG).show()
+            } else {
+                settings.tailnetControlUrl = url
+                settings.tailnetHostname = name
+                hostname.setText(name)
+                val key = tailnetKey.text.toString().trim()
+                if (key.isNotEmpty()) settings.tailnetAuthKey = key
+                tailnetKey.setText("")
+                if (ServerStatus.value.running && settings.tailnetEnabled) ServerService.start(this, restart = true)
+                refresh()
+            }
+        }
+    }
+
+    private fun openLoginUrl(url: String) {
+        val uri = Uri.parse(url)
+        if (uri.scheme != "http" && uri.scheme != "https") return
+        launch(Intent(Intent.ACTION_VIEW, uri))
     }
 
     private fun permissionText(label: Int, granted: Boolean): String = getString(R.string.permission_state,

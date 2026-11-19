@@ -1,4 +1,6 @@
+import java.io.File
 import java.security.MessageDigest
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -25,8 +27,8 @@ android {
         applicationId = "dev.tentacle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
         buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
     }
     buildFeatures { buildConfig = true }
@@ -44,6 +46,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     testOptions.unitTests.all { it.useJUnitPlatform() }
+    // The Tailscale bridge adds ~21 MB of native code per ABI. Compress it in the
+    // APK (extracted at install) so downloads and in-app updates stay small.
+    packaging.jniLibs.useLegacyPackaging = true
 }
 
 kotlin {
@@ -51,9 +56,81 @@ kotlin {
     compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17 }
 }
 
+// Embedded Tailscale: the Go module in ../tsbridge is bound with gomobile into an
+// AAR under build/. Gradle reruns the task only when the Go sources change.
+// Toolchain lookup: Go and gomobile from PATH (or the tentacle.goBin and
+// tentacle.gomobileBin Gradle properties), the NDK from ANDROID_NDK_HOME or the
+// newest <sdk>/ndk/<version>. See android/README.md.
+val tsbridgeDir = rootProject.file("tsbridge")
+val tsbridgeAar = layout.buildDirectory.file("tsbridge/tsbridge.aar")
+val tsbridgeTags = listOf(
+    "aws", "kube", "ssh", "taildrop", "drive", "tap", "tpm", "capture", "appconnectors",
+    "advertiseexitnode", "advertiseroutes", "bird", "clientupdate", "relayserver", "syspolicy",
+    "synology", "systray", "desktop_sessions", "dbus", "networkmanager", "resolved", "iptables",
+    "logtail", "netlog", "posture", "cloud", "webclient", "doctor", "portlist", "conn25",
+    "oauthkey", "identityfederation", "debugeventbus", "completion", "flashappliance",
+    "linuxdnsfight", "sdnotify", "syslog", "tundevstats", "gro",
+).joinToString(",") { "ts_omit_$it" }
+// Report the real Tailscale version to the control server (gomobile builds lack Go build info).
+val tailscaleVersion = Regex("""tailscale\.com v([0-9][^\s]*)""")
+    .find(rootProject.file("tsbridge/go.mod").readText())?.groupValues?.get(1) ?: "unknown"
+val goBinProperty = providers.gradleProperty("tentacle.goBin").orNull
+val gomobileBinProperty = providers.gradleProperty("tentacle.gomobileBin").orNull
+val sdkDirectory: String? = run {
+    val local = rootProject.file("local.properties")
+    val fromLocal = if (local.isFile) Properties().apply { local.inputStream().use { load(it) } }
+        .getProperty("sdk.dir") else null
+    fromLocal ?: System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+}
+
+fun findOnPath(name: String, extra: List<String> = emptyList()): File? =
+    (extra + System.getenv("PATH").orEmpty().split(File.pathSeparator))
+        .filter { it.isNotBlank() }.map { File(it, name) }.firstOrNull { it.canExecute() }
+
+val buildTsbridge by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Builds the embedded Tailscale bridge AAR with gomobile."
+    inputs.files(fileTree(tsbridgeDir) { include("**/*.go", "go.mod", "go.sum") })
+        .withPropertyName("goSources")
+    inputs.property("tags", tsbridgeTags)
+    inputs.property("tailscaleVersion", tailscaleVersion)
+    outputs.file(tsbridgeAar)
+    workingDir = tsbridgeDir
+    doFirst {
+        val go = findOnPath("go", listOfNotNull(goBinProperty, System.getenv("GOROOT")?.let { "$it/bin" }))
+            ?: throw GradleException("Go is required to build the embedded Tailscale bridge. Install the Go " +
+                "version named in android/tsbridge/go.mod and put it on PATH (or set -Ptentacle.goBin=<dir>).")
+        val goPath = providers.exec { commandLine(go.path, "env", "GOPATH") }.standardOutput.asText.get().trim()
+        val gomobile = findOnPath("gomobile", listOfNotNull(gomobileBinProperty, "$goPath/bin"))
+            ?: throw GradleException("gomobile is required: go install golang.org/x/mobile/cmd/gomobile@latest " +
+                "golang.org/x/mobile/cmd/gobind@latest (or set -Ptentacle.gomobileBin=<dir>).")
+        val ndk = System.getenv("ANDROID_NDK_HOME")?.let(::File)?.takeIf { it.isDirectory }
+            ?: sdkDirectory?.let { File(it, "ndk").listFiles() }?.filter { File(it, "source.properties").isFile }
+                ?.maxByOrNull { dir -> dir.name.split('.').map { it.toIntOrNull() ?: 0 }
+                    .fold(0L) { acc, part -> acc * 100000 + part } }
+            ?: throw GradleException("The Android NDK is required: sdkmanager \"ndk;<version>\" " +
+                "or set ANDROID_NDK_HOME.")
+        tsbridgeAar.get().asFile.parentFile.mkdirs()
+        environment("PATH", listOf(go.parent, gomobile.parent, System.getenv("PATH").orEmpty())
+            .joinToString(File.pathSeparator))
+        environment("ANDROID_NDK_HOME", ndk.path)
+        sdkDirectory?.let { environment("ANDROID_HOME", it) }
+        environment("CGO_ENABLED", "1")
+        commandLine(gomobile.path, "bind", "-target=android/arm64,android/amd64", "-androidapi", "26",
+            "-javapkg", "dev.tentacle.tailnet.bridge", "-trimpath", "-tags", tsbridgeTags,
+            "-ldflags", "-s -w -linkmode=external -extldflags=-Wl,-z,max-page-size=16384 " +
+                "-X tailscale.com/version.longStamp=$tailscaleVersion-tentacle " +
+                "-X tailscale.com/version.shortStamp=$tailscaleVersion",
+            "-o", tsbridgeAar.get().asFile.path, ".")
+    }
+}
+
+tasks.named("preBuild") { dependsOn(buildTsbridge) }
+
 dependencies {
     implementation(project(":core"))
     implementation(libs.jsch)
+    implementation(files(tsbridgeAar).builtBy(buildTsbridge))
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
 }

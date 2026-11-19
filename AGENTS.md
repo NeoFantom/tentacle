@@ -17,9 +17,11 @@ the single source of truth for module boundaries and contracts.
   `add_commands(subparsers)`).
 - PC core: Python ≥ 3.11 standard library only. Optional heavy deps (ASR) only
   inside their backend, imported lazily, declared as extras in `pyproject.toml`.
-- Android: Kotlin. `com.github.mwiede:jsch` is the single allowed third-party
-  runtime dependency and belongs only in `:app`; `:core` stays pure JVM with no
-  runtime dependencies. JUnit is test-only.
+- Android: Kotlin. Allowed runtime dependencies, both only in `:app`:
+  `com.github.mwiede:jsch` and the in-repository Go bridge `android/tsbridge`
+  (gomobile AAR built from source by Gradle; its Go dependency is
+  `tailscale.com`). `:core` stays pure JVM with no runtime dependencies. JUnit
+  is test-only. Never commit the generated AAR.
 - Every module ships tests that run offline and fast:
   `cd pc && .venv/bin/python -m unittest discover -s tests` and
   `cd android && ./gradlew test`.
@@ -38,4 +40,5 @@ the single source of truth for module boundaries and contracts.
   `dev.tentacle` and `dev.tentacle.core`. The agent skill lives in
   `skills/tentacle/SKILL.md`.
 - Keep connection guidance in `docs/CONNECT.md`; it is the contract for the
-  Android SSH-tunnel implementation.
+  Android SSH-tunnel and embedded-Tailscale implementations and for the PC's
+  path selection.

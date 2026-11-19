@@ -67,6 +67,30 @@ class Settings(context: Context) {
             .putString("trusted_host_key", key).putString("trusted_host_fingerprint", fingerprint).commit())
     }
 
+    var tailnetEnabled: Boolean
+        get() = prefs.getBoolean("tailnet_enabled", false)
+        set(value) { prefs.edit().putBoolean("tailnet_enabled", value).apply() }
+
+    /** Empty selects Tailscale's default control server; any Headscale URL works. */
+    var tailnetControlUrl: String
+        get() = prefs.getString("tailnet_control_url", "")!!
+        set(value) { prefs.edit().putString("tailnet_control_url", value).apply() }
+
+    /** Optional pre-auth key for the first login. Never displayed; cleared once logged in. */
+    var tailnetAuthKey: String
+        get() = prefs.getString("tailnet_auth_key", "")!!
+        set(value) { prefs.edit().putString("tailnet_auth_key", value).apply() }
+
+    var tailnetHostname: String
+        get() = prefs.getString("tailnet_hostname", null)?.takeIf { it.isNotEmpty() }
+            ?: dev.tentacle.tailnet.TailnetLogic.defaultHostname(android.os.Build.MODEL ?: "")
+        set(value) { prefs.edit().putString("tailnet_hostname", value).apply() }
+
+    /** Control URL the saved node identity belongs to. */
+    var tailnetStateControlUrl: String?
+        get() = prefs.getString("tailnet_state_control_url", null)
+        set(value) { prefs.edit().putString("tailnet_state_control_url", value).apply() }
+
     var publicUrl: String
         get() = prefs.getString("public_url", "")!!
         set(value) { prefs.edit().putString("public_url", value).apply() }

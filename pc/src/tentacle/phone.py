@@ -20,6 +20,7 @@ from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import __version__
+from .paths import PathSelector, opener
 
 
 class PhoneError(Exception):
@@ -35,8 +36,13 @@ class PhoneError(Exception):
         return self.message
 
 
-def parse_pair_string(text: str, token: str | None = None) -> tuple[str, str, str]:
-    """Parse an app pairing URI, or an HTTP base URL plus a separate token."""
+def parse_pair(text: str, token: str | None = None) -> tuple[list[str], str, str]:
+    """Parse a pairing string into ``(base_urls, token, name)``.
+
+    Accepts the app's pairing URI (one or more ``url=`` fields, in preference
+    order), the legacy ``tentacle://host:port?token=`` form, or an HTTP(S) base
+    URL plus a separate token.
+    """
     value = text.strip()
     try:
         parsed = urllib.parse.urlsplit(value)
@@ -49,22 +55,26 @@ def parse_pair_string(text: str, token: str | None = None) -> tuple[str, str, st
         if parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.fragment:
             raise ValueError("invalid pair string")
         query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
-        if any(len(query.get(field, [])) > 1 for field in ("token", "url", "name")):
+        if any(len(query.get(field, [])) > 1 for field in ("token", "name")):
             raise ValueError("pair string contains duplicate fields")
         pair_token = query.get("token", [""])[0]
-        pair_url = query.get("url", [""])[0]
+        pair_urls = query.get("url", [])
         if not pair_token:
             raise ValueError("pair string has no token")
-        if not pair_url:
+        if not pair_urls or not all(pair_urls):
             raise ValueError("pair string has no URL")
-        try:
-            pair_url_scheme = urllib.parse.urlsplit(pair_url).scheme
-        except ValueError as exc:
-            raise ValueError("invalid phone URL") from exc
-        if pair_url_scheme not in {"http", "https"}:
-            raise ValueError("pair string URL must use http or https")
-        base, _, _ = parse_pair_string(pair_url, pair_token)
-        return base, pair_token, query.get("name", [""])[0]
+        bases: list[str] = []
+        for pair_url in pair_urls:
+            try:
+                pair_url_scheme = urllib.parse.urlsplit(pair_url).scheme
+            except ValueError as exc:
+                raise ValueError("invalid phone URL") from exc
+            if pair_url_scheme not in {"http", "https"}:
+                raise ValueError("pair string URL must use http or https")
+            base = parse_pair(pair_url, pair_token)[0][0]
+            if base not in bases:
+                bases.append(base)
+        return bases, pair_token, query.get("name", [""])[0]
 
     if parsed.scheme == "tentacle":
         if not parsed.hostname or port is None or parsed.username or parsed.password:
@@ -76,7 +86,7 @@ def parse_pair_string(text: str, token: str | None = None) -> tuple[str, str, st
         if not pair_token:
             raise ValueError("pair string has no token")
         name = query.get("name", [""])[0]
-        return urllib.parse.urlunsplit(("http", parsed.netloc, "", "", "")), pair_token, name
+        return [urllib.parse.urlunsplit(("http", parsed.netloc, "", "", ""))], pair_token, name
 
     if parsed.scheme not in ("http", "https"):
         raise ValueError("pairing address must use tentacle, http, or https")
@@ -87,27 +97,50 @@ def parse_pair_string(text: str, token: str | None = None) -> tuple[str, str, st
     if not token:
         raise ValueError("a token is required with an HTTP URL")
     base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
-    return base, token, ""
+    return [base], token, ""
+
+
+def parse_pair_string(text: str, token: str | None = None) -> tuple[str, str, str]:
+    """Parse a pairing string into ``(first_base_url, token, name)``."""
+    urls, pair_token, name = parse_pair(text, token)
+    return urls[0], pair_token, name
 
 
 class PhoneClient:
     """Client for API v1. A client may be used by one thread at a time."""
 
-    def __init__(self, phone_cfg: Any):
-        self.url = str(phone_cfg.url).strip().rstrip("/")
+    def __init__(self, phone_cfg: Any, cache_dir: Path | None = None):
+        """``cache_dir`` (the data directory) keeps the chosen path between
+        commands when ``phone_cfg.urls`` lists several candidates."""
         self.token = phone_cfg.resolved_token().strip()
         self.timeout = float(phone_cfg.timeout_s)
         self.find_timeout = float(getattr(phone_cfg, "find_timeout_s", 120))
         self._ping_cache: dict[str, Any] | None = None
         self.last_round_trip_ms: float | None = None
-        if phone_cfg.use_system_proxy:
-            self._opener = urllib.request.build_opener()
-        else:
-            self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self._use_system_proxy = bool(phone_cfg.use_system_proxy)
+        self.paths = PathSelector(phone_cfg, cache_dir)
+        self._retried = False
+        self.url = ""
+        if not self.paths.multiple:
+            self._set_url(self.paths.urls[0] if self.paths.urls else "")
+
+    def _set_url(self, url: str) -> None:
+        self.url = url
+        self._opener = opener(url, self._use_system_proxy)
+
+    def select_path(self, *, refresh: bool = False, exclude: tuple[str, ...] = ()) -> None:
+        """Probe the configured candidates and use the chosen one."""
+        try:
+            selection = self.paths.select(refresh=refresh, exclude=exclude)
+        except LookupError as exc:
+            raise PhoneError("unreachable", str(exc), None) from exc
+        self._set_url(selection.url)
 
     def _ensure_paired(self) -> None:
-        if not self.url or not self.token:
+        if not self.paths.urls or not self.token:
             raise PhoneError("not_paired", "phone URL and token are not configured", None)
+        if not self.url:
+            self.select_path()
 
     @staticmethod
     def _transport_error(exc: BaseException) -> PhoneError:
@@ -156,7 +189,18 @@ class PhoneClient:
         except urllib.error.HTTPError as exc:
             raise self._http_error(exc) from exc
         except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
-            raise self._transport_error(exc) from exc
+            error = self._transport_error(exc)
+            if not self.paths.multiple or self._retried:
+                raise error from exc
+        # The chosen path stopped working: forget it and retry once on another.
+        self._retried = True
+        failed = self.url
+        self.paths.invalidate()
+        try:
+            self.select_path(exclude=(failed,))
+        except PhoneError:
+            raise error from None
+        return self._open(endpoint, params, method=method, headers=headers, timeout=timeout)
 
     def _json(
         self, endpoint: str, params: dict[str, Any] | None = None, *, timeout: float | None = None,

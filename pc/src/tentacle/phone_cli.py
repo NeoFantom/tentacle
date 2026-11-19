@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import config
-from .phone import PhoneClient, PhoneError, parse_pair_string
+from .phone import PhoneClient, PhoneError, parse_pair
 from .timeutil import from_ms, parse_since, to_ms
 
 
@@ -118,22 +118,39 @@ def _entries(entries, zone=None) -> None:
 
 
 def _pair(args) -> dict:
-    url, token, _name = parse_pair_string(args.address, args.token)
+    urls, token, _name = parse_pair(args.address, args.token)
     path = Path(config._expand(str(args.config))) if args.config else config.default_config_path()
     if not path.exists():
         config.init(path)
     cfg = config.load(path)
-    config.set_values(path, "phone", {"url": url, "token": token})
-    cfg.phone.url, cfg.phone.token = url, token
-    client = PhoneClient(cfg.phone)
+    # The first URL also goes to phone.url so older clients keep working.
+    config.set_values(path, "phone", {"url": urls[0], "urls": urls if len(urls) > 1 else [],
+                                      "token": token})
+    cfg.phone.url, cfg.phone.urls, cfg.phone.token = urls[0], urls if len(urls) > 1 else [], token
+    client = PhoneClient(cfg.phone, cfg.data_dir)
     return _ping_result(client)
 
 
 def _ping_result(client: PhoneClient) -> dict:
+    if client.paths.multiple:
+        client.select_path(refresh=True)
     result = dict(client.ping())
     result["base_url"] = client.url
     result["round_trip_ms"] = round(client.last_round_trip_ms or 0.0, 1)
+    if client.paths.multiple and client.paths.last is not None:
+        result["paths"] = client.paths.last.to_json()
     return result
+
+
+def _path_lines(paths: list[dict]) -> list[str]:
+    width = max(len(item["url"]) for item in paths)
+    lines = []
+    for item in paths:
+        rtt = f"{item['rtt_ms']:.1f} ms" if item["rtt_ms"] is not None else "-"
+        detail = f"  ({item['detail']})" if item["detail"] else ""
+        chosen = "  <- chosen" if item["chosen"] else ""
+        lines.append(f"  {item['url']:<{width}}  {item['status']:<11}  {rtt:>9}{chosen}{detail}")
+    return lines
 
 
 def _audio_extensions(cfg) -> list[str]:
@@ -205,7 +222,7 @@ def _run(args, cfg) -> int:
         if args.cmd == "pair":
             result = _pair(args)
         else:
-            client = PhoneClient(cfg.phone)
+            client = PhoneClient(cfg.phone, cfg.data_dir)
             if args.cmd == "ping":
                 result = _ping_result(client)
             elif args.cmd == "ls":
@@ -240,6 +257,9 @@ def _run(args, cfg) -> int:
         elif args.cmd in {"ping", "pair"}:
             print(f"{result['device']}  API {result['api']}  version {result['version']}")
             print(f"{result['base_url']}  {result['round_trip_ms']:.1f} ms round trip")
+            if result.get("paths"):
+                print("Paths (in preference order):")
+                print("\n".join(_path_lines(result["paths"])))
         elif args.cmd in {"ls", "find", "recent"}:
             if args.cmd == "ls":
                 display_zone = None if args.local_time else client.phone_timezone()
@@ -286,14 +306,20 @@ def doctor(cfg) -> list[tuple[str, bool, str]]:
             probe.write(b"tentacle")
         return cfg.data_dir
 
-    client = PhoneClient(cfg.phone)
+    client = PhoneClient(cfg.phone, cfg.data_dir)
 
     def route():
-        client._ensure_paired()
-        parsed = urllib.parse.urlsplit(client.url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("phone URL must use HTTP(S) and contain a host")
-        return client.url
+        if not client.paths.urls or not client.token:
+            raise PhoneError("not_paired", "phone URL and token are not configured", None)
+        for url in client.paths.urls:
+            parsed = urllib.parse.urlsplit(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                raise ValueError(f"phone URL must use HTTP(S) and contain a host: {url}")
+        if not client.paths.multiple:
+            return client.url
+        client.select_path(refresh=True)
+        assert client.paths.last is not None
+        return "chosen " + client.url + "\n" + "\n".join(_path_lines(client.paths.last.to_json()))
 
     def ping():
         reply = client.ping()
@@ -356,6 +382,7 @@ def _doctor_command(args, cfg) -> int:
     try:
         if cfg is None:
             cfg = config.load(args.config)
+            config.override_url(cfg, getattr(args, "url", None))
         with redirect_stdout(sys.stderr):
             checks = doctor(cfg)
     except (config.ConfigError, OSError, ValueError) as exc:

@@ -6,17 +6,23 @@
 # Choose one connection mode; the phone API and token are the same in every mode:
 # LAN: the phone's Wi-Fi address and local server port.
 # USB: the adb-forwarded loopback address and local server port.
-# Tailscale: the phone's 100.x address and local server port.
+# Tailscale: the phone's 100.x address and local server port (the app's
+# built-in Tailscale or the Tailscale app).
 # Own server: an HTTPS URL with an optional path prefix, for example
 # https://example.com/tentacle (nginx forwards it to the SSH reverse tunnel).
-# The app's pairing link fills in both url and token with `tentacle pair`.
+# The app's pairing link fills in url, urls and token with `tentacle pair`.
 url = ""                       # e.g. "https://example.com/tentacle"
+# Several addresses of the same phone, in preference order. When non-empty it
+# replaces url: each command uses the first one that answers a short ping
+# (cached for 60 s). A tailnet address (100.64.0.0/10) is skipped while the
+# local Tailscale client reports a relayed path and a later address works.
+urls = []                      # e.g. ["http://100.64.0.1:8765", "https://example.com/tentacle"]
 token = ""                     # inline token, or use one of:
 token_file = ""                # file containing the token
 token_env = ""                 # env var holding the token
 timeout_s = 20
 find_timeout_s = 120           # longer timeout for storage walks
-use_system_proxy = false       # phones on LAN/Tailscale are usually NOT reachable via a proxy
+use_system_proxy = false       # LAN, loopback and tailnet addresses never use a proxy
 
 [storage]
 data_dir = "~/.local/share/tentacle"   # downloaded recordings and cached transcripts

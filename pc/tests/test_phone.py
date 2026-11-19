@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import urlsplit
 
+from tentacle import __version__
 from tentacle.config import PhoneConfig
 from tentacle.phone import PhoneClient, PhoneError, parse_pair_string
 
@@ -131,7 +132,8 @@ class PairStringTests(unittest.TestCase):
             "tentacle://pair?name=Phone&url=https%3A%2F%2Fexample.com",
             "tentacle://user@pair?token=t&url=https%3A%2F%2Fexample.com",
             "tentacle://pair?token=a&token=b&url=https%3A%2F%2Fexample.com",
-            "tentacle://pair?token=t&url=https%3A%2F%2Fexample.com&url=http%3A%2F%2Fexample.com",
+            "tentacle://pair?token=t&url=https%3A%2F%2Fexample.com&url=",
+            "tentacle://pair?token=t&url=https%3A%2F%2Fexample.com&url=ftp%3A%2F%2Fexample.com",
             "tentacle://pair?token=t&url=tentacle%3A%2F%2Fphone.local%3A8765%3Ftoken%3Dnested",
             "ftp://phone.local:8765",
             "http://phone.local",
@@ -222,7 +224,7 @@ class PhoneClientTests(unittest.TestCase):
             client.find(root="Recordings")
         request, = opened.call_args.args
         self.assertEqual(request.full_url, "https://example.com/tentacle/v1/find?root=Recordings&type=file&hidden=0")
-        self.assertEqual(request.get_header("User-agent"), "tentacle/0.2.0")
+        self.assertEqual(request.get_header("User-agent"), f"tentacle/{__version__}")
         self.assertEqual(opened.call_args.kwargs["timeout"], 120)
         self.assertEqual(opened.call_args_list[0].kwargs["timeout"], 3)
 

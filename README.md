@@ -133,9 +133,11 @@ setup can expose the phone through an SSH reverse tunnel and HTTPS, for example
 built-in SSH-tunnel feature is a later task, so that setup currently needs an
 external SSH client. Details: [Connecting](docs/CONNECT.md).
 
-Android allows only one VPN at a time: Tailscale cannot run together with a
-phone proxy/VPN app. An SSH tunnel uses an ordinary TCP connection and can
-coexist with that app.
+Android allows only one VPN at a time: the Tailscale app cannot run together
+with a phone proxy/VPN app. The app's built-in Tailscale node is not a VPN and
+works while such an app stays on; an SSH tunnel is an ordinary TCP connection
+and also coexists with it. "Copy pairing link (all addresses)" lets the PC pick
+the fastest working address automatically (`tentacle ping` shows the choice).
 
 ## Privacy and limitations
 
@@ -213,7 +215,7 @@ tentacle transcribe ./call.m4a --force -o ./transcript
 
 可选同一局域网、USB（`adb forward tcp:8765 tcp:8765`）、两端加入 Tailscale，或通过自己的服务器建立 SSH 反向隧道并用 HTTPS 访问，例如 `https://example.com/tentacle`。PC 支持带路径前缀的 URL；安卓内置 SSH 隧道留待后续实现，目前需要外部 SSH 客户端。详见 [连接说明](docs/CONNECT.md)。
 
-安卓同一时间只能运行一个 VPN，因此手机 Tailscale 不能与代理/VPN 应用同时运行。SSH 隧道是普通 TCP 连接，可以与这些应用共存。
+安卓同一时间只能运行一个 VPN，因此 Tailscale 应用不能与代理/VPN 应用同时运行。应用内置的 Tailscale 节点不占用 VPN，可以在代理应用开启时照常工作；SSH 隧道是普通 TCP 连接，同样可以共存。用“复制配对链接（全部地址）”配对后，电脑会自动选用最快的可用地址（`tentacle ping` 会显示所选路径）。
 
 ### 隐私、限制与验证
 

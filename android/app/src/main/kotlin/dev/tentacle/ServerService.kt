@@ -22,6 +22,8 @@ import android.os.PowerManager
 import dev.tentacle.core.FileApi
 import dev.tentacle.core.HttpServer
 import dev.tentacle.core.PingInfo
+import dev.tentacle.tailnet.TailnetManager
+import dev.tentacle.tailnet.TailnetStatus
 import dev.tentacle.tunnel.TunnelManager
 import dev.tentacle.tunnel.TunnelStatus
 import dev.tentacle.update.AppUpdater
@@ -30,6 +32,8 @@ class ServerService : Service() {
     private lateinit var settings: Settings
     private var tunnel: TunnelManager? = null
     private var tunnelSubscription: AutoCloseable? = null
+    private var tailnet: TailnetManager? = null
+    private var tailnetSubscription: AutoCloseable? = null
     private val updateCheck = object : Runnable {
         override fun run() {
             AppUpdater.check(this@ServerService)
@@ -54,6 +58,7 @@ class ServerService : Service() {
         AppUpdater.initialize(this)
         handler.postDelayed(updateCheck, 12 * 60 * 60 * 1000L)
         tunnelSubscription = TunnelStatus.observe { handler.post { if (server?.isRunning == true) updateNotification() } }
+        tailnetSubscription = TailnetStatus.observe { handler.post { if (server?.isRunning == true) updateNotification() } }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -81,6 +86,7 @@ class ServerService : Service() {
                             allFilesAccess = DeviceEnvironment.allFilesAccess(this),
                             roots = api.roots,
                             timezone = DeviceEnvironment.timezoneId,
+                            tailnet = TailnetStatus.value.pingJson(),
                         )
                     },
                 )
@@ -93,12 +99,18 @@ class ServerService : Service() {
                     handler.post { if (server?.isRunning == true) updateNotification() }
                 }.also { it.start(settings.port) }
             }
+            if (tailnet == null) {
+                tailnet = TailnetManager(this, settings).also { it.start(settings.port) }
+            }
             if (intent?.action == ACTION_TRUST_HOST) tunnel?.trustNewHostKey()
+            if (intent?.action == ACTION_TAILNET_LOGIN) tailnet?.login()
+            if (intent?.action == ACTION_TAILNET_LOGOUT) tailnet?.logout()
             updateLocks()
             ServerStatus.publish(ServerStatus.State(running = true))
             updateNotification()
             watchNetworks()
         } catch (e: Exception) {
+            android.util.Log.w("tentacle", "File server failed to start: ${e.message}")
             ServerStatus.publish(ServerStatus.State(error = "server_failed"))
             stopSelf()
             return START_NOT_STICKY
@@ -128,10 +140,12 @@ class ServerService : Service() {
         refreshNotificationChannel(this)
         val localized = AppLanguage.wrap(applicationContext)
         val host = DeviceEnvironment.addresses(this).firstOrNull()?.host ?: localized.getString(R.string.no_network_short)
-        getSystemService(NotificationManager::class.java).notify(
-            NOTIFICATION_ID, notification(localized.getString(R.string.notification_status,
-                localized.getString(R.string.serving, host, settings.port), TunnelStatus.value.display(localized))),
-        )
+        var status = localized.getString(R.string.notification_status,
+            localized.getString(R.string.serving, host, settings.port), TunnelStatus.value.display(localized))
+        if (TailnetStatus.value.mode != TailnetStatus.Mode.OFF) {
+            status = localized.getString(R.string.notification_tailnet, status, TailnetStatus.value.display(localized))
+        }
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(status))
     }
 
     private fun notification(message: String): Notification {
@@ -175,6 +189,8 @@ class ServerService : Service() {
     private fun stopServer() {
         tunnel?.close()
         tunnel = null
+        tailnet?.close()
+        tailnet = null
         try { server?.stop() } finally {
             server = null
             releaseLocks()
@@ -186,6 +202,8 @@ class ServerService : Service() {
         networkCallback = null
         tunnelSubscription?.close()
         tunnelSubscription = null
+        tailnetSubscription?.close()
+        tailnetSubscription = null
         handler.removeCallbacksAndMessages(null)
         stopServer()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -199,6 +217,8 @@ class ServerService : Service() {
         private const val ACTION_STOP = "dev.tentacle.STOP"
         private const val ACTION_TRUST_HOST = "dev.tentacle.TRUST_HOST"
         private const val ACTION_RESTART = "dev.tentacle.RESTART"
+        private const val ACTION_TAILNET_LOGIN = "dev.tentacle.TAILNET_LOGIN"
+        private const val ACTION_TAILNET_LOGOUT = "dev.tentacle.TAILNET_LOGOUT"
         private const val CHANNEL = "file_server"
         private const val NOTIFICATION_ID = 1
         fun refreshNotificationChannel(context: Context) {
@@ -220,6 +240,16 @@ class ServerService : Service() {
         fun trustNewHostKey(context: Context) {
             if (ServerStatus.value.running) context.startForegroundService(
                 Intent(context, ServerService::class.java).setAction(ACTION_TRUST_HOST))
+        }
+
+        fun tailnetLogin(context: Context) {
+            if (ServerStatus.value.running) context.startForegroundService(
+                Intent(context, ServerService::class.java).setAction(ACTION_TAILNET_LOGIN))
+        }
+
+        fun tailnetLogout(context: Context) {
+            if (ServerStatus.value.running) context.startForegroundService(
+                Intent(context, ServerService::class.java).setAction(ACTION_TAILNET_LOGOUT))
         }
 
         fun stop(context: Context) { context.stopService(Intent(context, ServerService::class.java)) }

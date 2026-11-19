@@ -41,6 +41,7 @@ def _config_show(args, cfg) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="tentacle", description="tentacle: phone files + call recordings for local agents")
     ap.add_argument("--config", help="config file (default: $TENTACLE_CONFIG or ~/.config/tentacle/config.toml)")
+    ap.add_argument("--url", help="use this phone base URL, overriding phone.url and phone.urls")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
     _config_commands(sub)
@@ -61,6 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         cfg = None if getattr(args, "needs_config", True) is False else config.load(args.config)
+        if cfg is not None:
+            config.override_url(cfg, args.url)
         return int(args.func(args, cfg) or 0)
     except config.ConfigError as e:
         print(f"config error: {e}", file=sys.stderr)

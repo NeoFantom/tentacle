@@ -254,7 +254,7 @@ def _size(size: int) -> str:
 
 def _calls_command(args, cfg: Config) -> int:
     rows = list_calls(
-        cfg, PhoneClient(cfg.phone), since=args.since, until=args.until, source_name=args.source,
+        cfg, PhoneClient(cfg.phone, cfg.data_dir), since=args.since, until=args.until, source_name=args.source,
         with_text=args.with_text, app=args.app, limit=args.limit,
     )
     if args.json:
@@ -275,14 +275,14 @@ def _calls_command(args, cfg: Config) -> int:
 
 
 def _pull_command(args, cfg: Config) -> int:
-    paths = pull_paths(cfg, PhoneClient(cfg.phone), args.paths, Path(args.to) if args.to else None)
+    paths = pull_paths(cfg, PhoneClient(cfg.phone, cfg.data_dir), args.paths, Path(args.to) if args.to else None)
     for path in paths:
         print(path)
     return 0
 
 
 def _transcribe_command(args, cfg: Config) -> int:
-    files = transcribe_path(cfg, PhoneClient(cfg.phone), args.input, force=args.force,
+    files = transcribe_path(cfg, PhoneClient(cfg.phone, cfg.data_dir), args.input, force=args.force,
                             output_prefix=Path(args.output) if args.output else None)
     selected = files.json_path if args.json else files.text_path
     print(selected.read_text(encoding="utf-8"), end="")

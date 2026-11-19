@@ -11,8 +11,8 @@ serves a read-only HTTP API; each PC command does its work and exits. There is n
 PC daemon, automatic analysis, project filing, or task queue.
 
 The automation implementation is preserved on `experimental/automation`.
-Connectivity options, including the Android SSH reverse tunnel, are documented
-in [CONNECT.md](CONNECT.md).
+Connectivity options, including the Android SSH reverse tunnel and the embedded
+Tailscale node, are documented in [CONNECT.md](CONNECT.md).
 
 ## 2. Components and ownership
 
@@ -20,8 +20,10 @@ in [CONNECT.md](CONNECT.md).
 |---|---|
 | `android/:core`, `dev.tentacle.core` | Storage roots, confined file access, HTTP API and token authentication; pure Kotlin/JVM. |
 | `android/:app`, `dev.tentacle` | Foreground service, permission guidance, settings, pairing and live service status. |
+| `android/tsbridge` (Go, `tsbridge`) | Embedded userspace Tailscale node (`tailscale.com/tsnet`) bound with gomobile into an AAR for `:app` (`dev.tentacle.tailnet`). |
 | `pc/src/tentacle/config.py` | All PC settings, loading and masked display. |
 | `phone.py`, `phone_cli.py` | HTTP client, resumable transfers, file commands, discovery and diagnostics. |
+| `paths.py` | Choosing among the phone's candidate base URLs (probe, tailnet-direct check, short cache). |
 | `calls.py` | Recording metadata, manual listing/pulling and content-addressed transcription cache. |
 | `asr/` | Local ASR backends, transcript validation and rendering. |
 | `timeutil.py` | Shared time parsing and conversion. |
@@ -29,8 +31,9 @@ in [CONNECT.md](CONNECT.md).
 
 The PC core uses Python ≥ 3.11 standard library only. Optional ASR libraries are
 lazy imports declared as package extras. Android uses Kotlin;
-`com.github.mwiede:jsch` is the sole third-party runtime dependency and is
-confined to `:app`. The phone records nothing itself; existing recorders write
+`com.github.mwiede:jsch` and the in-repository Go bridge (`android/tsbridge`,
+built from source with gomobile; it pulls in `tailscale.com`) are the only
+runtime dependencies besides the framework, and both are confined to `:app`. The phone records nothing itself; existing recorders write
 the files exposed by this toolkit. The PC never writes to the phone.
 
 ## 3. Phone HTTP API v1 (contract between `android/` and `pc/`)
@@ -72,7 +75,7 @@ the files exposed by this toolkit. The PC never writes to the phone.
 
 | Method & path | Query | Response |
 |---|---|---|
-| `GET /v1/ping` | — | `{"app":"tentacle","api":1,"version":"0.1.0","device":"<manufacturer model>","android_sdk":35,"roots":[{"id":"primary","path":"/storage/emulated/0","label":"Internal"}],"all_files_access":true,"time_ms":...,"timezone":"Asia/Shanghai"}` — `time_ms`/`timezone` are the phone's clock and IANA zone; the PC uses them for file-age checks and for interpreting timestamps in file names |
+| `GET /v1/ping` | — | `{"app":"tentacle","api":1,"version":"0.1.0","device":"<manufacturer model>","android_sdk":35,"roots":[{"id":"primary","path":"/storage/emulated/0","label":"Internal"}],"all_files_access":true,"time_ms":...,"timezone":"Asia/Shanghai"}` — `time_ms`/`timezone` are the phone's clock and IANA zone; the PC uses them for file-age checks and for interpreting timestamps in file names. Optional additive field `"tailnet":{"state":"running","ip":"100.64.0.1"}` while the embedded Tailscale node is enabled: `state` ∈ `starting` \| `needs_login` \| `running` \| `error` \| `stopped`, `ip` only while running. It never carries keys or login URLs; clients must ignore unknown fields. |
 | `GET /v1/ls` | `path`, `hidden=0\|1` (default 0) | `{"path":..., "entries":[Entry...]}` sorted dirs first then name |
 | `GET /v1/stat` | `path` | `Entry` |
 | `GET /v1/find` | `root` (path, default primary), `ext` (comma list, case-insensitive, no dot), `name` (case-insensitive substring), `since_ms`, `until_ms`, `type=file\|dir\|any` (default file), `max_depth` (default 12), `limit` (default 500, max 5000), `sort=mtime_desc\|mtime_asc\|name` (default mtime_desc) | `{"root":..., "entries":[Entry...], "truncated": bool}`. Walk skips `Android/data`, `Android/obb`, hidden dirs unless `hidden=1`; never follows symlinks out of roots. |
@@ -96,7 +99,22 @@ notifications, battery optimisation and vendor autostart settings.
 Pairing format is
 `tentacle://pair?name=<urlencoded-device>&token=<token>&url=<urlencoded-base-url>`,
 one line per candidate non-loopback IPv4 address. When configured, the public
-HTTPS URL contributes another line. Settings live in `SharedPreferences`.
+HTTPS URL contributes another line, and a running embedded Tailscale node
+contributes `http://<100.x>:<port>`. The "all addresses" link repeats `url=` in
+preference order: embedded tailnet, Wi-Fi/Ethernet, other interfaces, public
+URL. A link with one `url=` is the original format. Settings live in
+`SharedPreferences`.
+
+The optional embedded Tailscale node (`dev.tentacle.tailnet`, Go bridge
+`android/tsbridge`) runs inside `ServerService`, independently of the SSH
+tunnel. It is a userspace tsnet node (no VpnService), so it works while a
+VPN/proxy app is active. It listens on the tailnet at the server port and
+proxies each TCP connection to the local server on `127.0.0.1`; the phone token
+still protects every request. Its state directory is app-private
+(`no_backup/tailnet`), log upload to Tailscale is disabled, and an optional
+pre-auth key is kept only until the first successful login. The app supplies
+network interfaces and network changes to the node because Android 11+ hides
+them from Go.
 
 The app can maintain an ECDSA-authenticated SSH reverse tunnel while the local
 server runs. Its private key remains in app-private storage; its host-key trust,
@@ -106,7 +124,7 @@ installs only APKs signed by the running application's certificate.
 
 ## 5. PC package and CLI
 
-Distribution and package: `tentacle`, version `0.2.0`. Entry point:
+Distribution and package: `tentacle`, version `0.3.0`. Entry point:
 `tentacle` → `tentacle.cli:main`; feature modules register via
 `add_commands(subparsers)`. There are no legacy command aliases.
 
@@ -120,7 +138,7 @@ Lookup: `--config PATH` > `$TENTACLE_CONFIG` >
 
 | Section | Settings |
 |---|---|
-| `[phone]` | URL, token settings, `timeout_s = 20`, `find_timeout_s = 120`, `use_system_proxy`. |
+| `[phone]` | URL, ordered candidate `urls`, token settings, `timeout_s = 20`, `find_timeout_s = 120`, `use_system_proxy`. |
 | `[storage]` | `data_dir`, default `~/.local/share/tentacle`. |
 | `[[sources]]` | Unique name, phone path, extensions, optional filename regex and timestamp format, `min_age_s`. |
 | `[calls]` | `timezone`, an optional IANA zone override for recording filenames. |
@@ -136,7 +154,18 @@ source code. `TENTACLE_ASR_VERBOSE` enables verbose optional-backend output.
 `User-Agent: tentacle/<version>` and a Bearer token. Base URL path prefixes are
 preserved: `https://example.com/tentacle` →
 `https://example.com/tentacle/v1/ping`. System proxies are bypassed unless
-explicitly enabled. `find` uses its dedicated timeout; other requests use
+explicitly enabled; loopback, LAN, link-local and tailnet (100.64.0.0/10)
+addresses always bypass them.
+
+Path selection (`paths.py`): when `phone.urls` is non-empty it replaces
+`phone.url`. The candidates are probed concurrently with `GET /v1/ping`
+(2.5 s timeout) and the first working one in list order wins. A tailnet
+candidate is checked with `tailscale status --json` when that CLI exists; if
+the peer owning that address is relayed (no `CurAddr`) and a later candidate
+works, the later one wins, otherwise it is used anyway. The winner is cached for
+60 s in `<data_dir>/path-cache.json` (keyed by the candidate list). A transport
+error invalidates the cache and retries the request once on another candidate.
+The global `--url URL` option overrides `phone.url` and `phone.urls`. `find` uses its dedicated timeout; other requests use
 `timeout_s`. Errors become `PhoneError(code, message, status)`.
 
 Downloads write a `.part` file, resume using HTTP Range and matching ETags,
@@ -144,7 +173,8 @@ verify size, and atomically replace the destination.
 
 ```text
 tentacle config init|show|path
-tentacle pair 'tentacle://example.com:8765?token=...'
+tentacle [--url URL] COMMAND ...
+tentacle pair 'tentacle://pair?name=...&token=...&url=...&url=...'
 tentacle ping
 tentacle ls [PATH] [-a] [--json] [--local-time]
 tentacle stat PATH [--json] [--local-time]
@@ -167,6 +197,12 @@ Relative dates accept `m/h/d/w`; absolute dates accept `YYYY-MM-DD` or
 `Recorder`, `Sounds`, `Download`, `Documents`, `Android/media/com.tencent.mm`,
 `Android/media/com.ss.android.lark`, `Call`, `CallRecordings`. Missing locations
 are skipped. Results are aggregated by parent directory with source suggestions.
+
+`pair` stores every `url=` of a link in `phone.urls` (and the first one in
+`phone.url`; a single-address link clears `phone.urls`), then selects a path.
+With several candidates, `ping` and `pair` print each candidate with its result
+(`ok`, `direct`, `relayed` or `unreachable`) and round trip, and mark the chosen
+one; JSON output adds a `paths` list.
 
 `doctor` checks config, writable data directory, phone route/ping, configured
 source paths, ASR backend availability and CUDA. It has no agent, project,

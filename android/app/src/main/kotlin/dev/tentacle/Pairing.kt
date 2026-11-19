@@ -25,5 +25,19 @@ object Pairing {
     fun uri(baseUrl: String, token: String, device: String): String =
         "tentacle://pair?name=${encode(device)}&token=${encode(token)}&url=${encode(baseUrl)}"
 
+    /**
+     * One link with every candidate base URL in preference order: embedded
+     * tailnet, Wi-Fi/Ethernet, other interfaces, public URL. The computer
+     * tries them in this order (see docs/CONNECT.md).
+     */
+    fun uriAll(tailnetUrl: String?, addresses: List<Address>, port: Int, publicUrl: String?,
+               token: String, device: String): String {
+        val urls = (listOfNotNull(tailnetUrl) + sorted(addresses).map { "http://${it.host}:$port" } +
+            listOfNotNull(publicUrl)).distinct()
+        require(urls.isNotEmpty()) { "no address" }
+        return "tentacle://pair?name=${encode(device)}&token=${encode(token)}" +
+            urls.joinToString("") { "&url=${encode(it)}" }
+    }
+
     private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
 }

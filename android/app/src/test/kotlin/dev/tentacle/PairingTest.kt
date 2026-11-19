@@ -46,4 +46,21 @@ class PairingTest {
         assertEquals(url, fields["url"])
         assertEquals(token, fields["token"])
     }
+
+    @Test fun `all-addresses link lists tailnet, LAN, other and public URLs in order`() {
+        val lan = Pairing.address("192.0.2.1", "wlan0", true)
+        val vpn = Pairing.address("100.64.0.9", "tun0", false)
+        val other = Pairing.address("198.51.100.1", "rmnet0", false)
+        val uri = URI(Pairing.uriAll("http://100.64.0.1:8765", listOf(other, vpn, lan), 8765,
+            "https://example.com/tentacle", "t&k", "Phone"))
+        val pairs = uri.rawQuery.split('&').map {
+            val parts = it.split('=', limit = 2)
+            parts[0] to URLDecoder.decode(parts[1], "UTF-8")
+        }
+        assertEquals(listOf("http://100.64.0.1:8765", "http://192.0.2.1:8765", "http://100.64.0.9:8765",
+            "http://198.51.100.1:8765", "https://example.com/tentacle"), pairs.filter { it.first == "url" }.map { it.second })
+        assertEquals("t&k", pairs.single { it.first == "token" }.second)
+        val noTailnet = URI(Pairing.uriAll(null, listOf(lan), 8765, null, "t", "Phone"))
+        assertEquals(1, noTailnet.rawQuery.split('&').count { it.startsWith("url=") })
+    }
 }

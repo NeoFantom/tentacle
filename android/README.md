@@ -3,11 +3,12 @@
 `:app` is a framework-only Android shell for the JVM `:core` file server.
 It uses Kotlin and Android framework views, follows the system light/dark
 appearance through DeviceDefault themes, and has no AndroidX or Material
-dependency. `com.github.mwiede:jsch` is the app's single third-party runtime
-dependency and implements its SSH reverse tunnel; `:core` remains pure JVM.
-The application id and label are
-`dev.tentacle` and `Tentacle`; version is `0.2.0` (code 2), minimum API 26,
+dependency. Its runtime dependencies are `com.github.mwiede:jsch` (SSH reverse
+tunnel) and the Go bridge in `tsbridge/` (embedded Tailscale, built from source
+into an AAR); `:core` remains pure JVM. The application id and label are
+`dev.tentacle` and `Tentacle`; version is `0.3.0` (code 3), minimum API 26,
 compile/target API 35. JDK 21 builds Java 17 bytecode; JUnit is test-only.
+APKs contain `arm64-v8a` (phones) and `x86_64` (emulator) native code.
 
 ## Build
 
@@ -15,6 +16,25 @@ Install Android SDK platform 35 and the build-tools requested by AGP (currently
 34.0.0), using the SDK's `cmdline-tools/latest/bin/sdkmanager`. Point
 `ANDROID_HOME` at the SDK, or put `sdk.dir` in the gitignored `local.properties`.
 Do not commit local SDK paths, APKs, signing material or build directories.
+
+The embedded Tailscale bridge also needs:
+
+- **Go** at the version named in `tsbridge/go.mod` (the `tailscale.com` module
+  sets the minimum), on `PATH` or given with `-Ptentacle.goBin=<dir>`;
+- **gomobile/gobind**: `go install golang.org/x/mobile/cmd/gomobile@latest
+  golang.org/x/mobile/cmd/gobind@latest` (found on `PATH`, in
+  `$(go env GOPATH)/bin`, or via `-Ptentacle.gomobileBin=<dir>`);
+- **the NDK**: `sdkmanager "ndk;29.0.14206865"` (any recent NDK works; the
+  newest `<sdk>/ndk/<version>` is used unless `ANDROID_NDK_HOME` is set).
+
+`:app:buildTsbridge` (a `preBuild` dependency) runs `gomobile bind` into
+`app/build/tsbridge/tsbridge.aar` only when it is missing or the Go sources,
+`go.mod`/`go.sum` or build tags changed, and fails with a clear message when a
+tool is missing. Go modules download on the first build (set `GOPROXY` if
+needed). The bridge is built with `ts_omit_*` tags for features it does not
+use (including the log uploader), stripped, with 16 KB page alignment. Its own
+tests run with `cd tsbridge && go test ./...`. Native libraries are stored
+compressed in the APK to keep downloads small (about 17 MB instead of 45 MB).
 
 ```sh
 ./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
@@ -53,8 +73,10 @@ is best-effort with an app-details fallback; its state cannot be detected.
 
 The foreground service listens on all interfaces, default port 8765, with a
 persistent low-importance notification containing its best address and a Stop
-action. The screen lists IPv4 pairing links, preferring Wi-Fi/Ethernet, then
-addresses in the Tailscale CGNAT range, then other interfaces. Copy a link and
+action. The screen lists IPv4 pairing links: the built-in Tailscale address
+when connected, then Wi-Fi/Ethernet, addresses in the Tailscale CGNAT range,
+other interfaces and the public URL. "Copy pairing link (all addresses)"
+copies one link with all of them in that order. Copy a link and
 run `tentacle pair '<copied link>'` on the computer. Tokens are masked until Show;
 clipboard copies contain the complete token and are marked sensitive on API
 33+. Regeneration requires confirmation and invalidates the previous token
@@ -67,6 +89,21 @@ while the file server runs. It uses an app-private ECDSA key and pins the SSH
 host key on first use. See `docs/CONNECT.md` for the server-side authorized key
 and nginx setup. The optional public HTTPS URL is included as another pairing
 link; the app does not infer it from the SSH host.
+
+The optional built-in Tailscale node (`dev.tentacle.tailnet`) runs a
+userspace tsnet node inside the service, next to and independent of the SSH
+tunnel. It needs no VPN slot, so it works while a VPN/proxy app is on; only the
+server port is reachable on the tailnet and is proxied to `127.0.0.1:<port>`.
+Settings: enable switch (default off), control server URL (empty = Tailscale,
+or a Headscale URL), optional auth key (app-private, never shown, deleted after
+the first login), and hostname (default `tentacle-<model>`). Changing them
+restarts the service; changing the control URL starts a new node identity. The
+node state lives in `no_backup/tailnet`. The app enumerates interfaces with
+`java.net.NetworkInterface` and pushes them, the default interface and
+gateway to Go before start and on every default-network change, because Android
+11+ denies Go's netlink access; the same callback triggers an immediate
+rebind/re-STUN. Logs go to logcat (tag `GoLog`), never to Tailscale's log
+service. `/v1/ping` reports `{"tailnet":{"state":…,"ip":…}}` while enabled.
 
 The app can check GitHub Releases for signed APK updates. Release builds use
 the repository supplied by `tentacle.updateRepo`; users can override the update
@@ -114,7 +151,10 @@ adb shell am start -n dev.tentacle/.MainActivity --ez autostart true
 adb forward tcp:18765 tcp:8765
 ```
 
-`autostart` is honoured only by debug builds. The service remains unexported;
+`autostart` is honoured only by debug builds, as are the test extras
+`--ez tailnet_enabled true`, `--es tailnet_control_url URL`,
+`--es tailnet_auth_key KEY` and `--es tailnet_hostname NAME` (they save the
+built-in Tailscale settings and restart the service). The service remains unexported;
 release builds ignore that extra. For a disposable emulator only, read its token
 with `adb shell run-as dev.tentacle cat shared_prefs/tentacle.xml`, without
 logging or publishing it. Configure the PC client URL to `http://127.0.0.1:18765`
