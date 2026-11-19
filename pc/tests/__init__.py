@@ -1,1 +1,1 @@
-"""Test support package for phone2agent."""
+"""Test support package for tentacle."""

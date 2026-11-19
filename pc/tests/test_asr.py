@@ -15,7 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from phone2agent.config import AsrConfig
+from tentacle.config import AsrConfig
 
 
 def transcript(**changes):
@@ -37,7 +37,7 @@ def transcript(**changes):
 
 class TranscriptTests(unittest.TestCase):
     def test_speakers_are_normalised_in_first_appearance_order(self):
-        from phone2agent.asr.base import normalize_speakers, validate_transcript
+        from tentacle.asr.base import normalize_speakers, validate_transcript
 
         value = validate_transcript(transcript())
         self.assertEqual([segment["speaker"] for segment in value["segments"]], ["S1", "S1", "S2"])
@@ -53,7 +53,7 @@ class TranscriptTests(unittest.TestCase):
         )
 
     def test_null_speakers_remain_null(self):
-        from phone2agent.asr.base import validate_transcript
+        from tentacle.asr.base import validate_transcript
 
         value = transcript()
         value["segments"][0]["speaker"] = None
@@ -64,7 +64,7 @@ class TranscriptTests(unittest.TestCase):
         )
 
     def test_invalid_shape_is_rejected(self):
-        from phone2agent.asr.base import AsrError, validate_transcript
+        from tentacle.asr.base import AsrError, validate_transcript
 
         value = transcript()
         del value["model"]
@@ -72,7 +72,7 @@ class TranscriptTests(unittest.TestCase):
             validate_transcript(value)
 
     def test_write_transcript_merges_consecutive_speaker_segments_and_formats_time(self):
-        from phone2agent.asr import write_transcript
+        from tentacle.asr import write_transcript
 
         value = transcript(duration_s=3662.5)
         value["segments"][2]["start"] = 3661.2
@@ -94,17 +94,17 @@ class TranscriptTests(unittest.TestCase):
         self.assertIn("[1:01:01] S2: three", markdown)
 
     def test_write_failure_cleans_staged_atomic_files(self):
-        from phone2agent.asr import write_transcript
+        from tentacle.asr import write_transcript
 
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
-            with mock.patch("phone2agent.asr.os.replace", side_effect=OSError("disk full")):
+            with mock.patch("tentacle.asr.os.replace", side_effect=OSError("disk full")):
                 with self.assertRaisesRegex(OSError, "disk full"):
                     write_transcript(transcript(), directory / "call.json", directory / "call.md")
             self.assertFalse(any(path.name.endswith(".part") for path in directory.iterdir()))
 
     def test_null_speaker_segments_keep_separate_timestamps(self):
-        from phone2agent.asr import write_transcript
+        from tentacle.asr import write_transcript
 
         value = transcript()
         value["segments"] = [
@@ -124,14 +124,14 @@ class TranscriptTests(unittest.TestCase):
 
 class RegistryTests(unittest.TestCase):
     def test_unknown_backend_lists_valid_names(self):
-        from phone2agent.asr import get_backend
+        from tentacle.asr import get_backend
 
         with self.assertRaisesRegex(ValueError, r"funasr.*faster-whisper.*command.*none"):
             get_backend("missing")
 
     def test_none_backend_has_clear_configuration_error(self):
-        from phone2agent.asr import get_backend
-        from phone2agent.asr.base import AsrError
+        from tentacle.asr import get_backend
+        from tentacle.asr.base import AsrError
 
         with self.assertRaisesRegex(AsrError, "configure"):
             get_backend("none")(Path("unused.wav"), AsrConfig(backend="none"))
@@ -139,7 +139,7 @@ class RegistryTests(unittest.TestCase):
 
 class BackendCacheTests(unittest.TestCase):
     def test_funasr_model_is_cached_by_options(self):
-        from phone2agent.asr import funasr_backend
+        from tentacle.asr import funasr_backend
 
         created = []
 
@@ -170,7 +170,7 @@ class BackendCacheTests(unittest.TestCase):
         self.assertIsNone(created[1]["spk_model"])
 
     def test_funasr_transcribe_forwards_bounded_batch_and_hotwords(self):
-        from phone2agent.asr import funasr_backend
+        from tentacle.asr import funasr_backend
 
         model = mock.Mock()
         model.generate.return_value = [{
@@ -180,20 +180,20 @@ class BackendCacheTests(unittest.TestCase):
         fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True))
         samples = object()
         with (
-            mock.patch.dict(os.environ, {"P2A_ASR_VERBOSE": "0"}),
+            mock.patch.dict(os.environ, {"TENTACLE_ASR_VERBOSE": "0"}),
             mock.patch.dict(sys.modules, {"torch": fake_torch}),
             mock.patch.object(funasr_backend, "_get_model", return_value=model) as get_model,
             mock.patch.object(funasr_backend, "load_audio", return_value=(samples, 1.0)),
         ):
             value = funasr_backend.transcribe(
                 Path("call.aac"),
-                AsrConfig(hotwords=["ExampleName", "phone2agent"]),
+                AsrConfig(hotwords=["ExampleName", "tentacle"]),
             )
             funasr_backend.transcribe(
                 Path("call.aac"),
                 AsrConfig(device="cpu", hotwords=[]),
             )
-            with mock.patch.dict(os.environ, {"P2A_ASR_VERBOSE": "1"}):
+            with mock.patch.dict(os.environ, {"TENTACLE_ASR_VERBOSE": "1"}):
                 funasr_backend.transcribe(Path("call.aac"), AsrConfig())
 
         get_model.assert_any_call("paraformer-zh", "cuda", True)
@@ -205,12 +205,12 @@ class BackendCacheTests(unittest.TestCase):
         self.assertTrue(first["sentence_timestamp"])
         self.assertTrue(first["disable_pbar"])
         self.assertFalse(model.generate.call_args_list[2].kwargs["disable_pbar"])
-        self.assertEqual(first["hotword"], "ExampleName phone2agent")
+        self.assertEqual(first["hotword"], "ExampleName tentacle")
         self.assertEqual(model.generate.call_args_list[1].kwargs["hotword"], "")
         self.assertEqual(value["segments"][0]["speaker"], "S1")
 
     def test_funasr_resolves_all_cached_models_without_downloads(self):
-        from phone2agent.asr import funasr_backend
+        from tentacle.asr import funasr_backend
 
         aliases = {name: f"publisher/{name}" for name in
                    ("paraformer-zh", "fsmn-vad", "ct-punc", "cam++")}
@@ -244,7 +244,7 @@ class BackendCacheTests(unittest.TestCase):
         self.assertTrue(options["disable_update"])
 
     def test_funasr_local_directory_needs_no_hub_import(self):
-        from phone2agent.asr import funasr_backend
+        from tentacle.asr import funasr_backend
 
         with tempfile.TemporaryDirectory() as directory:
             with mock.patch.dict(sys.modules, {"modelscope": None, "funasr": None}):
@@ -252,8 +252,8 @@ class BackendCacheTests(unittest.TestCase):
                                  str(Path(directory).resolve()))
 
     def test_funasr_missing_model_download_and_failure_identify_model(self):
-        from phone2agent.asr import funasr_backend
-        from phone2agent.asr.base import AsrError
+        from tentacle.asr import funasr_backend
+        from tentacle.asr.base import AsrError
 
         snapshot = mock.Mock(side_effect=FileNotFoundError("not cached"))
         download = mock.Mock(return_value="downloaded/model")
@@ -271,13 +271,13 @@ class BackendCacheTests(unittest.TestCase):
                 funasr_backend._resolve_model("ct-punc")
 
     def test_funasr_quiet_output_restores_logging_even_on_failure(self):
-        from phone2agent.asr import funasr_backend
+        from tentacle.asr import funasr_backend
 
         root = logging.getLogger()
         handlers, level, disabled = root.handlers[:], root.level, root.manager.disable
         output, errors = io.StringIO(), io.StringIO()
         with (
-            mock.patch.dict(os.environ, {"P2A_ASR_VERBOSE": "0"}),
+            mock.patch.dict(os.environ, {"TENTACLE_ASR_VERBOSE": "0"}),
             mock.patch("sys.stdout", output), mock.patch("sys.stderr", errors),
         ):
             with self.assertRaisesRegex(RuntimeError, "failure"):
@@ -296,12 +296,12 @@ class BackendCacheTests(unittest.TestCase):
         self.assertEqual(root.manager.disable, disabled)
 
     def test_funasr_quiet_import_keeps_library_log_handler_usable(self):
-        from phone2agent.asr import funasr_backend
+        from tentacle.asr import funasr_backend
 
         logger = logging.Logger("library-import")
         errors = io.StringIO()
         with (
-            mock.patch.dict(os.environ, {"P2A_ASR_VERBOSE": "0"}),
+            mock.patch.dict(os.environ, {"TENTACLE_ASR_VERBOSE": "0"}),
             mock.patch.dict(logging.Logger.manager.loggerDict, {logger.name: logger}),
             mock.patch("sys.stderr", errors),
         ):
@@ -312,16 +312,16 @@ class BackendCacheTests(unittest.TestCase):
         self.assertEqual(errors.getvalue(), "still usable\n")
 
     def test_funasr_verbose_preserves_library_output(self):
-        from phone2agent.asr import funasr_backend
+        from tentacle.asr import funasr_backend
 
         output = io.StringIO()
-        with mock.patch.dict(os.environ, {"P2A_ASR_VERBOSE": "1"}), mock.patch("sys.stdout", output):
+        with mock.patch.dict(os.environ, {"TENTACLE_ASR_VERBOSE": "1"}), mock.patch("sys.stdout", output):
             with funasr_backend._quiet_output():
                 print("library banner")
         self.assertEqual(output.getvalue(), "library banner\n")
 
     def test_whisper_model_is_cached_by_options(self):
-        from phone2agent.asr import whisper_backend
+        from tentacle.asr import whisper_backend
 
         created = []
 
@@ -354,7 +354,7 @@ class BackendCacheTests(unittest.TestCase):
 
 class CommandBackendTests(unittest.TestCase):
     def test_placeholder_substitution_preserves_braces_in_paths_and_code(self):
-        from phone2agent.asr.command_backend import _build_argv
+        from tentacle.asr.command_backend import _build_argv
 
         with tempfile.TemporaryDirectory() as directory:
             audio = Path(directory) / "call{output}.wav"
@@ -375,7 +375,7 @@ class CommandBackendTests(unittest.TestCase):
         return path
 
     def test_external_command_end_to_end(self):
-        from phone2agent.asr.command_backend import transcribe
+        from tentacle.asr.command_backend import transcribe
 
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -403,8 +403,8 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps(result), encoding="utf-8")
             self.assertFalse(any(path.name.endswith(".transcript.json") for path in directory.iterdir()))
 
     def test_invalid_json_is_reported(self):
-        from phone2agent.asr.base import AsrError
-        from phone2agent.asr.command_backend import transcribe
+        from tentacle.asr.base import AsrError
+        from tentacle.asr.command_backend import transcribe
 
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -419,8 +419,8 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps(result), encoding="utf-8")
             self.assertFalse(any(path.name.endswith(".transcript.json") for path in directory.iterdir()))
 
     def test_nonzero_exit_includes_stderr(self):
-        from phone2agent.asr.base import AsrError
-        from phone2agent.asr.command_backend import transcribe
+        from tentacle.asr.base import AsrError
+        from tentacle.asr.command_backend import transcribe
 
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -434,8 +434,8 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps(result), encoding="utf-8")
                 transcribe(audio, cfg)
 
     def test_non_utf8_stderr_is_safely_reported(self):
-        from phone2agent.asr.base import AsrError
-        from phone2agent.asr.command_backend import transcribe
+        from tentacle.asr.base import AsrError
+        from tentacle.asr.command_backend import transcribe
 
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -449,8 +449,8 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps(result), encoding="utf-8")
                 transcribe(audio, cfg)
 
     def test_both_placeholders_are_required(self):
-        from phone2agent.asr.base import AsrError
-        from phone2agent.asr.command_backend import transcribe
+        from tentacle.asr.base import AsrError
+        from tentacle.asr.command_backend import transcribe
 
         with tempfile.TemporaryDirectory() as directory_name:
             audio = self._audio(Path(directory_name))
@@ -458,71 +458,12 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps(result), encoding="utf-8")
                 transcribe(audio, AsrConfig(command=[sys.executable, "{input}"]))
 
 
-class CliTests(unittest.TestCase):
-    def test_parser_accepts_standalone_transcription_options(self):
-        from phone2agent.cli import build_parser
-
-        args = build_parser().parse_args(
-            ["transcribe", "call.aac", "-o", "out/call", "--backend", "command",
-             "--model", "fixture", "--no-diarize", "--json"]
-        )
-        self.assertEqual(args.audio, "call.aac")
-        self.assertEqual(args.output, "out/call")
-        self.assertEqual(args.backend, "command")
-        self.assertEqual(args.model, "fixture")
-        self.assertTrue(args.no_diarize)
-        self.assertTrue(args.json)
-
-    def test_handler_applies_overrides_and_prints_json(self):
-        from phone2agent import asr
-
-        with tempfile.TemporaryDirectory() as directory_name:
-            audio = Path(directory_name) / "call.wav"
-            audio.write_bytes(b"fixture")
-            args = SimpleNamespace(
-                audio=str(audio), output=str(Path(directory_name) / "result"),
-                backend="command", model="fixture-model", no_diarize=True, json=True,
-            )
-            cfg = SimpleNamespace(asr=AsrConfig())
-            output = io.StringIO()
-            with (
-                mock.patch.object(asr, "transcribe", return_value=transcript()) as run,
-                mock.patch.object(asr, "write_transcript") as write,
-                mock.patch("sys.stdout", output),
-            ):
-                status = asr._transcribe_command(args, cfg)
-
-        self.assertEqual(status, 0)
-        passed_cfg = run.call_args.args[1]
-        self.assertEqual(passed_cfg.backend, "command")
-        self.assertEqual(passed_cfg.model, "fixture-model")
-        self.assertFalse(passed_cfg.diarize)
-        write.assert_called_once()
-        self.assertEqual(json.loads(output.getvalue())["backend"], "test")
-
-    def test_handler_returns_one_with_readable_asr_error(self):
-        from phone2agent import asr
-
-        with tempfile.TemporaryDirectory() as directory_name:
-            audio = Path(directory_name) / "call.wav"
-            audio.write_bytes(b"fixture")
-            args = SimpleNamespace(
-                audio=str(audio), output=None, backend="none", model=None,
-                no_diarize=False, json=False,
-            )
-            stderr = io.StringIO()
-            with mock.patch("sys.stderr", stderr):
-                status = asr._transcribe_command(args, SimpleNamespace(asr=AsrConfig()))
-
-        self.assertEqual(status, 1)
-        self.assertIn("ASR error:", stderr.getvalue())
-        self.assertIn("configure", stderr.getvalue())
 
 
 class FunasrMappingTests(unittest.TestCase):
     def test_sentence_info_milliseconds_map_to_segments(self):
-        from phone2agent.asr.base import validate_transcript
-        from phone2agent.asr.funasr_backend import sentence_segments
+        from tentacle.asr.base import validate_transcript
+        from tentacle.asr.funasr_backend import sentence_segments
 
         result = {
             "text": "hello world",
@@ -544,7 +485,7 @@ class FunasrMappingTests(unittest.TestCase):
         self.assertEqual([item["speaker"] for item in value["segments"]], ["S1", "S2", "S1"])
 
     def test_diarisation_disabled_discards_speaker_ids(self):
-        from phone2agent.asr.funasr_backend import sentence_segments
+        from tentacle.asr.funasr_backend import sentence_segments
 
         segments = sentence_segments(
             {"sentence_info": [{"start": 0, "end": 100, "spk": 8, "text": "hello"}]},
@@ -557,7 +498,7 @@ class FunasrMappingTests(unittest.TestCase):
 @unittest.skipUnless(importlib.util.find_spec("av"), "PyAV is not installed")
 class AudioTests(unittest.TestCase):
     def test_generated_8khz_wave_is_loaded_as_16khz_mono_float32(self):
-        from phone2agent.asr.audio import load_audio, probe_duration
+        from tentacle.asr.audio import load_audio, probe_duration
 
         with tempfile.TemporaryDirectory() as directory_name:
             path = Path(directory_name) / "narrowband.wav"

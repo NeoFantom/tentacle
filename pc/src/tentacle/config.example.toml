@@ -1,0 +1,51 @@
+# tentacle configuration — the ONLY place for tunables.
+# Location: --config PATH > $TENTACLE_CONFIG > $XDG_CONFIG_HOME/tentacle/config.toml
+# Paths accept ~ and $ENV_VARS.
+
+[phone]
+# Filled in by `tentacle pair 'tentacle://host:port?token=...'`.
+url = ""                       # e.g. "https://example.com/tentacle"
+token = ""                     # inline token, or use one of:
+token_file = ""                # file containing the token
+token_env = ""                 # env var holding the token
+timeout_s = 20
+find_timeout_s = 120           # longer timeout for storage walks
+use_system_proxy = false       # phones on LAN/Tailscale are usually NOT reachable via a proxy
+
+[storage]
+data_dir = "~/.local/share/tentacle"   # downloaded recordings and cached transcripts
+
+# Where recordings appear on the phone. Paths are relative to internal storage
+# (/storage/emulated/0) or absolute. Run `tentacle discover` to find candidates.
+# name_pattern: Python regex with optional named groups app / counterpart / ts;
+# ts_format: strptime format for the ts group. Without them, mtime is used.
+[[sources]]
+name = "app-call"              # Xiaomi HyperOS "AI 录音纪要" (WeChat / Feishu / QQ calls)
+path = "MIUI/sound_recorder/app_rec"
+extensions = ["aac", "m4a", "mp3", "amr", "wav", "ogg", "opus"]
+name_pattern = '^(?P<app>\S+?)录音 (?P<counterpart>.+?)_(?P<ts>\d{14})'
+ts_format = "%Y%m%d%H%M%S"
+min_age_s = 60                 # newer files are listed with recording=true
+
+[[sources]]
+name = "call"                  # system phone-call recorder
+path = "MIUI/sound_recorder/call_rec"
+extensions = ["aac", "m4a", "mp3", "amr", "wav", "ogg", "opus"]
+name_pattern = '^(?P<counterpart>.+?)_(?P<ts>\d{14})'
+ts_format = "%Y%m%d%H%M%S"
+min_age_s = 60                 # newer files are listed with recording=true
+
+[calls]
+timezone = ""                  # IANA zone of timestamps in file names; empty = the phone's reported zone
+
+[asr]
+backend = "funasr"             # funasr | faster-whisper | command | none
+language = "zh"
+model = ""                     # empty = backend default (funasr: paraformer-zh; faster-whisper: large-v3)
+diarize = true                 # speaker labels (funasr: cam++ clustering; ignored by backends without it)
+device = "auto"                # auto | cuda | cpu
+compute_type = "auto"          # faster-whisper only: float16 / int8_float16 / int8 / auto
+initial_prompt = ""            # faster-whisper only: vocabulary hint (names, jargon)
+hotwords = []                  # funasr only: hotword list (names, project terms)
+command = []                   # backend="command": argv template, placeholders {input} {output}
+

@@ -3,31 +3,31 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 
-val signingValues = listOf("P2A_KEYSTORE", "P2A_KEYSTORE_PASSWORD", "P2A_KEY_ALIAS", "P2A_KEY_PASSWORD")
+val signingValues = listOf("TENTACLE_KEYSTORE", "TENTACLE_KEYSTORE_PASSWORD", "TENTACLE_KEY_ALIAS", "TENTACLE_KEY_PASSWORD")
     .associateWith { providers.gradleProperty(it).orElse(providers.environmentVariable(it)).orNull }
 
 require(signingValues.values.all { it.isNullOrBlank() } || signingValues.values.all { !it.isNullOrBlank() }) {
-    "Release signing requires all four P2A_KEYSTORE, P2A_KEYSTORE_PASSWORD, P2A_KEY_ALIAS and P2A_KEY_PASSWORD values"
+    "Release signing requires all four TENTACLE_KEYSTORE, TENTACLE_KEYSTORE_PASSWORD, TENTACLE_KEY_ALIAS and TENTACLE_KEY_PASSWORD values"
 }
 
 android {
-    namespace = "dev.phone2agent"
+    namespace = "dev.tentacle"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.phone2agent"
+        applicationId = "dev.tentacle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
     buildFeatures { buildConfig = true }
     if (signingValues.values.all { !it.isNullOrBlank() }) {
         signingConfigs.create("release") {
-            storeFile = file(signingValues.getValue("P2A_KEYSTORE")!!)
-            storePassword = signingValues.getValue("P2A_KEYSTORE_PASSWORD")
-            keyAlias = signingValues.getValue("P2A_KEY_ALIAS")
-            keyPassword = signingValues.getValue("P2A_KEY_PASSWORD")
+            storeFile = file(signingValues.getValue("TENTACLE_KEYSTORE")!!)
+            storePassword = signingValues.getValue("TENTACLE_KEYSTORE_PASSWORD")
+            keyAlias = signingValues.getValue("TENTACLE_KEY_ALIAS")
+            keyPassword = signingValues.getValue("TENTACLE_KEY_PASSWORD")
         }
         buildTypes.getByName("release").signingConfig = signingConfigs.getByName("release")
     }

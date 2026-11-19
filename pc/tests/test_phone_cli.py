@@ -10,8 +10,9 @@ import tempfile
 import time
 import tomllib
 import unittest
+from unittest import mock
 
-from phone2agent import cli, config
+from tentacle import cli, config
 from tests.fakephone import FakePhone
 
 
@@ -21,14 +22,14 @@ class PhoneCliTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory()
         cls.root = Path(cls.temporary.name) / "phone"
         cls.root.mkdir()
-        (cls.root / "calls").mkdir()
-        (cls.root / "calls" / "one.aac").write_bytes(b"audio one")
-        (cls.root / "calls" / "two.M4A").write_bytes(b"audio two")
-        (cls.root / "elsewhere").mkdir()
-        (cls.root / "elsewhere" / "three.wav").write_bytes(b"audio three")
-        (cls.root / "calls" / "old.mp3").write_bytes(b"old")
+        (cls.root / "Recordings").mkdir()
+        (cls.root / "Recordings" / "one.aac").write_bytes(b"audio one")
+        (cls.root / "Recordings" / "two.M4A").write_bytes(b"audio two")
+        (cls.root / "Download").mkdir()
+        (cls.root / "Download" / "three.wav").write_bytes(b"audio three")
+        (cls.root / "Recordings" / "old.mp3").write_bytes(b"old")
         old = time.time() - 100 * 86400
-        os.utime(cls.root / "calls" / "old.mp3", (old, old))
+        os.utime(cls.root / "Recordings" / "old.mp3", (old, old))
         (cls.root / "note.txt").write_text("hello\nworld\n", encoding="utf-8")
         (cls.root / ".hidden").write_text("hidden", encoding="utf-8")
         cls.server = FakePhone(cls.root)
@@ -58,12 +59,12 @@ class PhoneCliTests(unittest.TestCase):
         return json.loads(out)
 
     def test_ping_ls_stat_and_human_columns(self):
-        self.assertEqual(self.run_json("ping")["app"], "phone2agent")
+        self.assertEqual(self.run_json("ping")["app"], "tentacle")
         listing = self.run_json("ls")
         self.assertNotIn(".hidden", [entry["name"] for entry in listing["entries"]])
         self.assertIn(".hidden", [entry["name"] for entry in self.run_json("ls", "-a")["entries"]])
         self.assertEqual(self.run_json("stat", "note.txt")["size"], 12)
-        code, out, err = self.run_cli("ls", "calls")
+        code, out, err = self.run_cli("ls", "Recordings")
         self.assertEqual((code, err), (0, ""))
         self.assertRegex(out, r"f\s+9 B\s+\d{4}-\d\d-\d\d \d\d:\d\d\s+")
         self.assertIn("one.aac", out)
@@ -74,7 +75,7 @@ class PhoneCliTests(unittest.TestCase):
             self.assertTrue(out.strip())
 
     def test_find_and_recent(self):
-        found = self.run_json("find", "calls", "--ext", "AAC,m4a", "--since", "2d",
+        found = self.run_json("find", "Recordings", "--ext", "AAC,m4a", "--since", "2d",
                               "--name", "o", "--limit", "1")
         self.assertEqual(len(found["entries"]), 1)
         self.assertTrue(found["truncated"])
@@ -104,13 +105,13 @@ class PhoneCliTests(unittest.TestCase):
 
     def test_pair_creates_missing_config_and_preserves_existing(self):
         missing = Path(self.tmp.name) / "nested" / "new.toml"
-        address = self.server.url.replace("http://", "p2a://") + "?token=t&name=Test%20device"
+        address = self.server.url.replace("http://", "tentacle://") + "?token=t&name=Test%20device"
         code, out, err = self.run_cli("pair", address, "--json", config_path=missing)
         self.assertEqual((code, err), (0, ""))
-        self.assertEqual(json.loads(out)["app"], "phone2agent")
+        self.assertEqual(json.loads(out)["app"], "tentacle")
         loaded = config.load(missing)
         self.assertEqual((loaded.phone.url, loaded.phone.token), (self.server.url, "t"))
-        self.assertIn("# phone2agent configuration", missing.read_text(encoding="utf-8"))
+        self.assertIn("# tentacle configuration", missing.read_text(encoding="utf-8"))
         code, out, err = self.run_cli("pair", self.server.url, "--token", "t")
         self.assertEqual((code, err), (0, ""))
         self.assertIn("API 1", out)
@@ -131,13 +132,98 @@ class PhoneCliTests(unittest.TestCase):
     def test_discover_json_and_valid_toml_suggestions(self):
         result = self.run_json("discover")
         self.assertEqual([item["count"] for item in result["directories"]], [2, 1])
-        self.assertEqual(result["directories"][0]["path"], str(self.root / "calls"))
-        self.assertEqual(result["suggested_sources"][0]["path"], str(self.root / "calls"))
+        self.assertEqual(result["directories"][0]["path"], str(self.root / "Recordings"))
+        self.assertEqual(result["suggested_sources"][0]["path"], str(self.root / "Recordings"))
         self.assertEqual(self.run_json("discover", "--since", "101d")["directories"][0]["count"], 3)
         code, out, err = self.run_cli("discover")
         self.assertEqual((code, err), (0, ""))
         snippet = out[out.index("[[sources]]"):]
         self.assertEqual(len(tomllib.loads(snippet)["sources"]), 2)
+
+    def test_human_times_use_phone_zone_unless_local_requested(self):
+        epoch_ms = 1_700_000_000_000
+        entry = {"name": "x", "path": "/storage/emulated/0/x", "type": "file",
+                 "size": 1, "mtime_ms": epoch_ms}
+        old_tz = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "America/Los_Angeles"
+            if hasattr(time, "tzset"):
+                time.tzset()
+            with mock.patch("tentacle.phone_cli.PhoneClient.ls", return_value={"entries": [entry]}), \
+                 mock.patch("tentacle.phone_cli.PhoneClient.ping", return_value={"timezone": "Asia/Shanghai"}):
+                code, phone_out, err = self.run_cli("ls")
+                self.assertEqual((code, err), (0, ""))
+                code, local_out, err = self.run_cli("ls", "--local-time")
+                self.assertEqual((code, err), (0, ""))
+            self.assertIn("2023-11-15 06:13", phone_out)
+            self.assertIn("2023-11-14 14:13", local_out)
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            if hasattr(time, "tzset"):
+                time.tzset()
+
+    def test_absolute_find_dates_use_the_selected_timezone(self):
+        old_tz = os.environ.get("TZ")
+        calls = []
+
+        def find(**kwargs):
+            calls.append(kwargs)
+            return {"entries": [], "truncated": False}
+
+        try:
+            os.environ["TZ"] = "America/Los_Angeles"
+            if hasattr(time, "tzset"):
+                time.tzset()
+            with mock.patch("tentacle.phone_cli.PhoneClient.find", side_effect=find), \
+                 mock.patch("tentacle.phone_cli.PhoneClient.ping", return_value={"timezone": "Asia/Shanghai"}):
+                self.run_json("find", "--since", "2023-11-15")
+                self.run_json("find", "--since", "2023-11-15", "--local-time")
+            self.assertEqual(calls[0]["since_ms"], 1_699_977_600_000)
+            self.assertEqual(calls[1]["since_ms"], 1_700_035_200_000)
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            if hasattr(time, "tzset"):
+                time.tzset()
+
+    def test_discover_queries_only_known_locations(self):
+        calls = []
+
+        def find(**kwargs):
+            calls.append(kwargs)
+            if kwargs["root"] == "Recordings":
+                return {"entries": [], "truncated": False}
+            from tentacle.phone import PhoneError
+            raise PhoneError("not_found", "missing", 404)
+
+        with mock.patch("tentacle.phone_cli.PhoneClient.find", side_effect=find):
+            self.run_json("discover")
+        self.assertNotIn(None, [call["root"] for call in calls])
+        self.assertEqual({call["max_depth"] for call in calls}, {4})
+        self.assertEqual(len(calls), 11)
+
+    def test_doctor_checks_only_manual_toolkit_dependencies(self):
+        doctor_config = Path(self.tmp.name) / "doctor.toml"
+        doctor_config.write_text(
+            "[phone]\nurl = " + json.dumps(self.server.url) + "\ntoken = \"t\"\n"
+            "[storage]\ndata_dir = " + json.dumps(str(Path(self.tmp.name) / "data")) + "\n"
+            "[[sources]]\nname = \"recordings\"\npath = \"Recordings\"\n"
+            "[asr]\nbackend = \"none\"\n",
+            encoding="utf-8",
+        )
+        code, out, err = self.run_cli("doctor", "--json", config_path=doctor_config)
+        self.assertEqual((code, err), (0, ""))
+        checks = json.loads(out)
+        self.assertEqual(
+            [item["check"] for item in checks],
+            ["config", "data_dir", "phone route", "phone ping", "source recordings", "ASR backend"],
+        )
+        self.assertTrue(all(item["ok"] for item in checks))
 
     def test_error_exit_codes(self):
         code, out, err = self.run_cli("stat", "missing", "--json")

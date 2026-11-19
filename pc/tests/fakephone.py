@@ -38,12 +38,13 @@ class _Server(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(
-        self, address, root: Path, token: str, timezone: str, clock_offset_s: float,
+        self, address, root: Path, token: str, timezone: str, clock_offset_s: float, app: str,
     ):
         self.root = root.resolve(strict=True)
         self.token = token
         self.timezone = timezone
         self.clock_offset_s = clock_offset_s
+        self.app = app
         super().__init__(address, _Handler)
 
 
@@ -241,9 +242,9 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(
             200,
             {
-                "app": "phone2agent",
+                "app": self.server.app,
                 "api": 1,
-                "version": "0.1.0",
+                "version": "0.2.0",
                 "device": "Fake Phone",
                 "android_sdk": 35,
                 "roots": [{"id": "primary", "path": str(self.server.root), "label": "Internal"}],
@@ -462,11 +463,13 @@ class FakePhone:
         token: str = "t",
         timezone: str = "Asia/Shanghai",
         clock_offset_s: float = 0,
+        app: str = "tentacle",
     ):
         self.root_dir = Path(root_dir)
         self.token = token
         self.timezone = timezone
         self.clock_offset_s = clock_offset_s
+        self.app = app
         self.url = ""
         self._server: _Server | None = None
         self._thread: threading.Thread | None = None
@@ -478,7 +481,7 @@ class FakePhone:
             raise ValueError(f"fake phone root is not a directory: {self.root_dir}")
         self._server = _Server(
             ("127.0.0.1", 0), self.root_dir, self.token,
-            self.timezone, self.clock_offset_s,
+            self.timezone, self.clock_offset_s, self.app,
         )
         host, port = self._server.server_address[:2]
         self.url = f"http://{host}:{port}"

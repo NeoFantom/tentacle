@@ -1,47 +1,36 @@
-# phone2agent — Architecture & Contracts
+# Tentacle — Architecture & Contracts
 
-This document is the single source of truth for module boundaries and the
-contracts between them. Every module implementation must conform to it; if a
-contract has to change, change this file first.
+This document is the single source of truth for module boundaries and contracts.
+Change an affected contract here before changing an implementation.
 
-## 1. What the system does
+## 1. Scope
 
-1. A local coding agent (Codex, Claude Code, ...) can browse the phone's shared
-   storage in real time with one-line commands: `p2a ls`, `p2a find`, `p2a get`.
-2. Call recordings on the phone (system call recorder, Xiaomi "AI 录音纪要" for
-   WeChat/Feishu/QQ calls, any app that writes audio to shared storage) are
-   picked up automatically.
-3. The PC transcribes them locally (pluggable ASR).
-4. An agent analyses each transcript into structured items (todos, project
-   progress, approach, handoff info, decisions), routes them to the matching
-   local project folder, writes the key points into that project following the
-   project's own conventions, commits and pushes.
-5. Actions that need the owner's go-ahead become *tasks*; once the owner
-   approves one (`p2a tasks approve <id>`), an agent starts working on it with
-   the call context attached.
+Tentacle is a manual toolkit for a human or local agent to browse Android shared
+storage, pull call recordings, and transcribe audio locally on demand. The phone
+serves a read-only HTTP API; each PC command does its work and exits. There is no
+PC daemon, automatic analysis, project filing, or task queue.
 
-Non-goals (v1): writing to the phone, cloud relay server, iOS, recording calls
-itself (the phone's own recorders do that; we only collect their files).
+The automation implementation is preserved on `experimental/automation`.
+Connectivity options are documented in [CONNECT.md](CONNECT.md); Android SSH
+tunnel integration is planned separately.
 
-## 2. Components
+## 2. Components and ownership
 
-```
-┌──────────── Android phone ────────────┐        ┌──────────────────── PC ─────────────────────┐
-│ phone2agent app                       │  HTTP  │ p2a (Python package)                         │
-│  :core  FileApi + HttpServer (JVM)    │◄───────┤  phone.py   client  ── p2a ls/find/get/...  │
-│  :app   ForegroundService, pairing UI │ Bearer │  sync.py    sources → data_dir/recordings    │
-│         permissions, boot start       │ token  │  asr/       audio → transcript.json          │
-└───────────────────────────────────────┘        │  analyze.py transcript → analysis.json       │
-  read-only access to shared storage             │  dispatch.py analysis → project notes, git   │
-  (MANAGE_EXTERNAL_STORAGE)                      │  tasks      approval queue → agent run       │
-                                                 │  pipeline.py daemon loop, notify hook        │
-                                                 │  store.py   SQLite state                     │
-                                                 └──────────────────────────────────────────────┘
-```
+| Component | Responsibility |
+|---|---|
+| `android/:core`, `dev.tentacle.core` | Storage roots, confined file access, HTTP API and token authentication; pure Kotlin/JVM. |
+| `android/:app`, `dev.tentacle` | Foreground service, permission guidance, settings, pairing and live service status. |
+| `pc/src/tentacle/config.py` | All PC settings, loading and masked display. |
+| `phone.py`, `phone_cli.py` | HTTP client, resumable transfers, file commands, discovery and diagnostics. |
+| `calls.py` | Recording metadata, manual listing/pulling and content-addressed transcription cache. |
+| `asr/` | Local ASR backends, transcript validation and rendering. |
+| `timeutil.py` | Shared time parsing and conversion. |
+| `skills/tentacle/SKILL.md` | Agent workflow for phone files and calls. |
 
-Transport: the phone is the server, the PC pulls. Reachability (same Wi-Fi,
-Tailscale, USB `adb forward`) is the user's choice; the PC only needs a URL.
-Pull is idempotent: files stay on the phone, the PC remembers what it fetched.
+The PC core uses Python ≥ 3.11 standard library only. Optional ASR libraries are
+lazy imports declared as package extras. Android uses Kotlin with no third-party
+runtime dependencies. The phone records nothing itself; existing recorders write
+the files exposed by this toolkit. The PC never writes to the phone.
 
 ## 3. Phone HTTP API v1 (contract between `android/` and `pc/`)
 
@@ -80,7 +69,7 @@ Pull is idempotent: files stay on the phone, the PC remembers what it fetched.
 
 | Method & path | Query | Response |
 |---|---|---|
-| `GET /v1/ping` | — | `{"app":"phone2agent","api":1,"version":"0.1.0","device":"<manufacturer model>","android_sdk":35,"roots":[{"id":"primary","path":"/storage/emulated/0","label":"Internal"}],"all_files_access":true,"time_ms":...,"timezone":"Asia/Shanghai"}` — `time_ms`/`timezone` are the phone's clock and IANA zone; the PC uses them for file-age checks and for interpreting timestamps in file names |
+| `GET /v1/ping` | — | `{"app":"tentacle","api":1,"version":"0.1.0","device":"<manufacturer model>","android_sdk":35,"roots":[{"id":"primary","path":"/storage/emulated/0","label":"Internal"}],"all_files_access":true,"time_ms":...,"timezone":"Asia/Shanghai"}` — `time_ms`/`timezone` are the phone's clock and IANA zone; the PC uses them for file-age checks and for interpreting timestamps in file names |
 | `GET /v1/ls` | `path`, `hidden=0\|1` (default 0) | `{"path":..., "entries":[Entry...]}` sorted dirs first then name |
 | `GET /v1/stat` | `path` | `Entry` |
 | `GET /v1/find` | `root` (path, default primary), `ext` (comma list, case-insensitive, no dot), `name` (case-insensitive substring), `since_ms`, `until_ms`, `type=file\|dir\|any` (default file), `max_depth` (default 12), `limit` (default 500, max 5000), `sort=mtime_desc\|mtime_asc\|name` (default mtime_desc) | `{"root":..., "entries":[Entry...], "truncated": bool}`. Walk skips `Android/data`, `Android/obb`, hidden dirs unless `hidden=1`; never follows symlinks out of roots. |
@@ -88,251 +77,164 @@ Pull is idempotent: files stay on the phone, the PC remembers what it fetched.
 
 Directory listings of very large dirs are not paginated in v1 (find has `limit`).
 
-## 4. Android app (`android/`)
+## 4. Android app
 
-Gradle project, Kotlin, minSdk 26, targetSdk 35, **no third-party runtime
-dependencies**.
+`:core` owns `FileApi` and `HttpServer`, with JVM tests using temporary roots.
+A find walk resolves its root once, checks symbolic links per entry, and avoids
+canonicalising ordinary children repeatedly. Returned paths stay confined to
+readable roots; denied Android directories and escaping symlinks remain blocked.
 
-- `:core` — pure Kotlin/JVM library, no Android imports. `FileApi` (roots,
-  path resolution, listing, find, stat, range reads) and `HttpServer` (minimal
-  HTTP/1.1 on `ServerSocket`, thread pool, keep-alive optional, request size
-  limits, Bearer auth). Fully unit-tested on the JVM with temp directories.
-- `:app` — Android shell: `ServerService` foreground service (type
-  `dataSync`/`specialUse`, persistent notification showing address), `BootReceiver`
-  (restart if enabled), `MainActivity` (status, permission guidance, start/stop,
-  port, token show/copy/regenerate, pair string). Settings in
-  `SharedPreferences`. Pair string format:
-  `p2a://<host>:<port>?token=<token>&name=<device>` — one line per candidate
-  address (Wi-Fi IPv4, Tailscale `100.x`, other non-loopback IPv4).
-- Permission guidance: All files access (`ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION`),
-  notifications (API 33+), ignore battery optimisations, and a best-effort link
-  to vendor autostart settings (Xiaomi) with fallback to app details. The UI
-  reports the *actual* permission state, never "granted" because a settings
-  page was opened.
+`:app` owns `ServerService`, `MainActivity`, `BootReceiver`, pairing and settings.
+The foreground notification keeps the server visible. The activity refreshes the
+actual service state when resumed and observes starts/stops while visible.
+Permission guidance reports actual grants, including all-files access,
+notifications, battery optimisation and vendor autostart settings.
 
-## 5. PC package (`pc/`, Python ≥ 3.11)
+Pairing format is `tentacle://<host>:<port>?token=<token>&name=<device>`, one line
+per candidate non-loopback IPv4 address. Settings live in `SharedPreferences`.
+No SSH client or tunnel settings are implemented in this version.
 
-Core uses the standard library only. ASR backends are optional extras.
-Entry point: `p2a` (`phone2agent.cli:main`).
+## 5. PC package and CLI
 
-### 5.1 Configuration — `config.py` (owner: architecture)
+Distribution and package: `tentacle`, version `0.2.0`. Entry point:
+`tentacle` → `tentacle.cli:main`; feature modules register via
+`add_commands(subparsers)`. There are no legacy command aliases.
 
-All tunables live in ONE TOML file; nothing machine-specific is hard-coded.
-Lookup: `--config PATH` > `$P2A_CONFIG` > `$XDG_CONFIG_HOME/phone2agent/config.toml`
-(default `~/.config/phone2agent/config.toml`). `p2a config init` writes the
-commented template `pc/src/phone2agent/config.example.toml`; `p2a config show`
-prints the effective config with secrets masked. Secrets (phone token) may be
-given inline, via `token_file`, or `token_env`. `~` and `$VARS` in path values
-are expanded. Modules receive a `Config` object; they never read env vars or
-files for settings themselves.
+### 5.1 Configuration
 
-### 5.2 State store — `store.py`
+Lookup: `--config PATH` > `$TENTACLE_CONFIG` >
+`$XDG_CONFIG_HOME/tentacle/config.toml` (default
+`~/.config/tentacle/config.toml`). `config init` writes the bundled commented
+`config.example.toml`; `config show` masks secrets. Path settings expand `~` and
+`$VARS`. Tokens can be inline, in `token_file`, or supplied by `token_env`.
 
-SQLite at `<data_dir>/state.db`, WAL mode, schema versioned with
-`PRAGMA user_version` and forward-only migrations.
+| Section | Settings |
+|---|---|
+| `[phone]` | URL, token settings, `timeout_s = 20`, `find_timeout_s = 120`, `use_system_proxy`. |
+| `[storage]` | `data_dir`, default `~/.local/share/tentacle`. |
+| `[[sources]]` | Unique name, phone path, extensions, optional filename regex and timestamp format, `min_age_s`. |
+| `[calls]` | `timezone`, an optional IANA zone override for recording filenames. |
+| `[asr]` | Backend, language, model, diarisation, device, compute type, initial prompt, hotwords and command template. |
 
-```sql
-CREATE TABLE recordings (
-  id            INTEGER PRIMARY KEY,
-  source        TEXT NOT NULL,          -- source name from config
-  phone_path    TEXT NOT NULL,
-  size          INTEGER NOT NULL,
-  mtime_ms      INTEGER NOT NULL,
-  sha256        TEXT,                   -- of the downloaded file
-  local_path    TEXT,                   -- under <data_dir>/recordings/
-  app           TEXT,                   -- parsed: wechat / phone / feishu / ...
-  counterpart   TEXT,                   -- parsed contact name / number
-  started_at    TEXT,                   -- ISO-8601 local time, parsed from name or mtime
-  duration_s    REAL,
-  status        TEXT NOT NULL,          -- discovered|downloaded|transcribed|analyzed|filed|skipped|failed
-  failed_stage  TEXT,
-  error         TEXT,
-  attempts      INTEGER NOT NULL DEFAULT 0,
-  next_try_at   TEXT,
-  created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL,
-  UNIQUE(phone_path, size, mtime_ms)
-);
-CREATE TABLE artifacts (               -- transcript / analysis / filing results
-  id INTEGER PRIMARY KEY,
-  recording_id INTEGER NOT NULL REFERENCES recordings(id),
-  kind TEXT NOT NULL,                    -- transcript|analysis|filing
-  path TEXT NOT NULL,                    -- file under data_dir
-  meta TEXT,                             -- JSON
-  created_at TEXT NOT NULL
-);
-CREATE TABLE tasks (
-  id INTEGER PRIMARY KEY,
-  recording_id INTEGER REFERENCES recordings(id),
-  project TEXT,                          -- project id or NULL
-  title TEXT NOT NULL,
-  instructions TEXT NOT NULL,
-  reason TEXT,
-  status TEXT NOT NULL,                  -- pending|approved|running|done|failed|rejected
-  owner_note TEXT,                       -- extra instruction given at approval
-  result_path TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE TABLE events (id INTEGER PRIMARY KEY, at TEXT NOT NULL, level TEXT NOT NULL,
-  recording_id INTEGER, task_id INTEGER, message TEXT NOT NULL);
+Modules receive `Config`; credentials and machine-specific settings stay out of
+source code. `TENTACLE_ASR_VERBOSE` enables verbose optional-backend output.
+
+### 5.2 Phone client and file commands
+
+`PhoneClient(cfg.phone)` provides `ping`, `ls`, `stat`, `find`, `download` and
+`read_bytes`. It accepts only `app = "tentacle"` from ping. Requests carry
+`User-Agent: tentacle/<version>` and a Bearer token. Base URL path prefixes are
+preserved: `https://example.com/tentacle` →
+`https://example.com/tentacle/v1/ping`. System proxies are bypassed unless
+explicitly enabled. `find` uses its dedicated timeout; other requests use
+`timeout_s`. Errors become `PhoneError(code, message, status)`.
+
+Downloads write a `.part` file, resume using HTTP Range and matching ETags,
+verify size, and atomically replace the destination.
+
+```text
+tentacle config init|show|path
+tentacle pair 'tentacle://example.com:8765?token=...'
+tentacle ping
+tentacle ls [PATH] [-a] [--json] [--local-time]
+tentacle stat PATH [--json] [--local-time]
+tentacle find [ROOT] [--ext aac,m4a] [--name TEXT] [--since 7d] [--until DATE]
+              [--limit N] [--max-depth N] [--json] [--local-time]
+tentacle recent [--since 1d] [--ext EXTENSIONS] [--json] [--local-time]
+tentacle get PATH [DEST]
+tentacle cat PATH [--max-bytes N]
+tentacle discover [--since 90d] [--json]
+tentacle doctor [--json]
 ```
 
-Stage functions transition `status` forward; on error they set `failed`,
-`failed_stage`, `error`, increment `attempts`, and set `next_try_at` with
-exponential backoff (5 min × 2^n, cap 24 h, give up after `pipeline.max_attempts`).
-`p2a retry <id>` resets a failed recording to the stage before `failed_stage`.
+Human file timestamps use the phone's ping timezone, cached for the process;
+`--local-time` chooses the PC's zone. JSON file entries retain epoch milliseconds.
+Relative dates accept `m/h/d/w`; absolute dates accept `YYYY-MM-DD` or
+`YYYY-MM-DDTHH:MM` and are interpreted in the selected zone.
 
-Data layout under `data_dir`:
-```
-recordings/<YYYY-MM>/<id>-<sanitised original name>
-transcripts/<id>.json   transcripts/<id>.md
-analyses/<id>.json
-filings/<id>-<project>.json
-tasks/<task id>.md      (agent final report)
-logs/agent/<timestamp>-<kind>-<id>.log
-inbox/<id>.md           (analysis with no confident project match)
-```
+`discover` searches these paths relative to the primary root, each with
+`max_depth = 4`: `MIUI/sound_recorder`, `Recordings`, `Music/Recordings`,
+`Recorder`, `Sounds`, `Download`, `Documents`, `Android/media/com.tencent.mm`,
+`Android/media/com.ss.android.lark`, `Call`, `CallRecordings`. Missing locations
+are skipped. Results are aggregated by parent directory with source suggestions.
 
-### 5.3 Phone client — `phone.py` (+ file commands in CLI)
+`doctor` checks config, writable data directory, phone route/ping, configured
+source paths, ASR backend availability and CUDA. It has no agent, project,
+queue, database or daemon checks.
 
-`PhoneClient(cfg.phone)` with methods `ping()`, `ls(path, hidden=False)`,
-`stat(path)`, `find(**filters)`, `download(path, dest, resume=True)` (atomic:
-write `.part`, verify size, rename; resumes with Range), `read_bytes(path,
-limit)`. Bypasses system proxies unless `phone.use_system_proxy = true`
-(phones on LAN/Tailscale are usually not reachable through a proxy). Errors map
-to `PhoneError(code, message, status)`.
+### 5.3 Manual recordings — `calls.py`
 
-CLI (human-readable by default, `--json` for machine output):
-```
-p2a pair 'p2a://192.168.1.5:8765?token=...'   # writes phone.url/token into config
-p2a ping
-p2a ls [PATH] [-a]
-p2a stat PATH
-p2a find [ROOT] [--ext aac,m4a] [--name STR] [--since 2d|2026-11-01] [--limit N]
-p2a recent [--since 1d] [--ext ...]            # find sorted by mtime, default since 1d
-p2a get PATH [DEST]                            # download (default ./<name>)
-p2a cat PATH [--max-bytes N]                   # print text file
-p2a discover                                   # list dirs that contain audio files, to help configure sources
+```text
+tentacle calls [--since 7d] [--until DATE] [--source NAME] [--with TEXT]
+               [--app APP] [--limit 50] [--json] [--local-time]
+tentacle pull PHONE_PATH... [--to DIR]
+tentacle transcribe PHONE_PATH_OR_LOCAL_FILE [--json] [--force] [-o PREFIX]
 ```
 
-### 5.4 Sync — `sync.py`
+`calls` makes one `/v1/find` request per selected source root, with its extensions,
+phone-side `since_ms`/`until_ms` bounds (last seven days by default) and limit
+(50 per source by default).
+Rows are merged newest first. Fields are `app`, `counterpart`, `started_at`,
+`size`, `source`, absolute phone `path`, `local` (cached path or null), and
+`recording`. `--with` matches a case-insensitive counterpart substring; `--app`
+matches the parsed app exactly. Human output aligns one recording per line;
+JSON is a list of objects.
 
-For each `[[sources]]` entry: `find(root=path, ext=extensions, since_ms=...)`;
-skip files younger than `min_age_s` (still being written); insert unseen
-`(phone_path,size,mtime_ms)` as `discovered`; download to
-`recordings/<YYYY-MM>/`, compute sha256, parse metadata with the source's
-`name_pattern` regex (named groups `app`, `counterpart`, `ts` with `ts_format`),
-→ `downloaded`. Duplicate content (same sha256 already stored) → `skipped`.
-`sync.backfill_days` bounds the very first scan. File age (`min_age_s`) is measured against the phone's `time_ms` from `ping` (clocks may differ). Timestamps parsed from file names are in the phone's zone: `sync.timezone` if set, else the `timezone` reported by `ping`, else the PC's local zone; `started_at` is stored with that zone's offset. Phone unreachable is not an
-error for recordings: log an event and return.
+Filename parsing preserves the recorder conventions: source `name_pattern` has
+optional named groups `app`, `counterpart`, `ts`; `ts_format` parses the latter.
+App names normalise 微信 → wechat, 企业微信 → wecom, 飞书 → feishu, QQ → qq,
+钉钉 → dingtalk, 腾讯会议 → tencent-meeting. A source named `call` without an app
+group defaults to `phone`. Invalid or absent filename timestamps fall back to
+mtime. `started_at` is ISO-8601 with offset, using `[calls].timezone`, then ping
+`timezone`, then local time. An invalid nonempty timezone override is an error.
+`--local-time` selects the PC zone for display.
+Files within `min_age_s` of ping `time_ms` are retained with `recording = true`;
+this uses the phone clock even when PC and phone clocks differ.
 
-### 5.5 ASR — `asr/`
+`pull` saves to `recordings/<source or other>/<original filename>` beneath the
+data directory, or to `--to`. It resumes partial downloads and skips a complete
+file of the same size. It prints the downloaded local paths.
 
-Interface: `transcribe(audio_path, cfg.asr) -> Transcript` where the JSON on disk is
+`transcribe` pulls paths starting with `/storage/`, and relative paths that are
+not existing local files. Other paths identify local files. SHA-256 of the
+complete audio selects the transcript cache; a hit avoids ASR unless `--force`.
+Stdout contains transcript text by default, or the unchanged JSON contract with
+`--json`. `-o PREFIX` also exports `PREFIX.json` and `PREFIX.txt`.
+
+### 5.4 ASR contract and cache
+
+`asr.transcribe(audio_path, cfg.asr)` returns this fixed shape:
+
 ```json
 {"backend":"faster-whisper","model":"large-v3","language":"zh","duration_s":1234.5,
  "segments":[{"id":0,"start":0.0,"end":3.2,"speaker":"S1","text":"..."}],
  "text":"full text"}
 ```
-`speaker` may be null when the backend has no diarisation. Backends:
-`funasr` (default: paraformer-zh + fsmn-vad + ct-punc + cam++ speaker clustering), `faster-whisper`, `command` (external program: template with
-`{input}` and `{output}` that must write the JSON above), `none`. Heavy imports
-happen lazily inside the backend; models are cached per process.
-`transcripts/<id>.md` is a readable rendering (`[mm:ss] S1: text`).
 
-### 5.6 Agent runner — `agent.py`
+`speaker` may be null. Backends: `funasr` (default, optional speaker clustering),
+`faster-whisper`, `command`, `none`. The command backend uses argv placeholders
+`{input}` and `{output}`; it must write the JSON above. Heavy libraries load
+lazily and models are cached per process. Text rendering uses
+`[mm:ss] SPEAKER: text` lines, omitting the speaker label when unavailable.
 
-One function: `run_agent(cfg.agent, prompt, *, cwd, mode, output_schema=None,
-log_path) -> AgentResult(ok, final_message, json, returncode, log_path)`.
-`mode` ∈ `read-only` | `workspace-write`. `cfg.agent.kind = "codex"` builds
-`codex exec --skip-git-repo-check --sandbox <mode> [--output-schema F]
---output-last-message OUT -C <cwd> -` with `-c` overrides from
-`cfg.agent.extra_args`; `kind = "command"` uses `cfg.agent.command` template with
-`{prompt_file} {output_file} {schema_file} {cwd} {mode}` placeholders, so any
-agent CLI can be plugged in. Prompt is passed on stdin or via file, never in
-argv. Timeout `cfg.agent.timeout_s`; full stdout/stderr go to `log_path`.
-
-### 5.7 Project registry — `projects.py`
-
-`list_projects(cfg.projects) -> [Project(id, path, description, has_git,
-has_remote)]`. Projects = immediate subdirectories of each `projects.roots`
-entry (plus explicit `projects.extra`), minus `projects.exclude` globs.
-Description: if `projects.index_file` is set, the paragraph under the matching
-`### <id>` heading; else first ~400 chars of `AGENTS.md`/`README.md`.
-
-### 5.8 Analysis — `analyze.py`
-
-Builds a prompt from `prompts/analyze.md` (+ owner name, call metadata,
-transcript markdown, project list) and runs the agent in `read-only` mode in
-`data_dir` with `schemas/analysis.schema.json`. Validates the JSON (stdlib
-validator for the subset of JSON Schema we use), saves `analyses/<id>.json`.
-
-Analysis JSON contract (`schemas/analysis.schema.json`):
-```json
-{
-  "title": "short title of the call",
-  "summary": "3-6 sentence summary",
-  "participants": [{"name": "Neo", "role": "owner"}],
-  "items": [{"kind": "todo|progress|approach|handoff|decision|info|risk",
-             "text": "...", "owner": "who is responsible or null",
-             "due": "free text or null", "project": "project id or null",
-             "quote": "short supporting quote from transcript"}],
-  "routes": [{"project": "id", "confidence": 0.0, "reason": "...",
-              "notes_markdown": "the key content to record in this project"}],
-  "actions": [{"title": "...", "project": "id or null",
-               "instructions": "what an agent should do, self-contained",
-               "reason": "why this needs the owner's go-ahead"}]
-}
+```text
+<data_dir>/
+  recordings/<source or other>/<filename>
+  transcripts/<audio sha256>.json
+  transcripts/<audio sha256>.txt
 ```
 
-### 5.9 Dispatch — `dispatch.py` and tasks
+There is no database. Cache files are local artifacts and must not be committed.
 
-For each route with `confidence >= projects.min_confidence`: run the agent in
-`workspace-write` mode with `cwd = project.path` using `prompts/file_notes.md`:
-read the project's AGENTS.md/CLAUDE.md/README conventions, write the notes
-where that project keeps such records (fallback `projects.default_notes_dir`,
-e.g. `notes/calls/<date>-<slug>.md`), never include the raw transcript unless
-`projects.include_transcript`, touch nothing else, and **not run git**. Its
-final message is JSON (`schemas/filing.schema.json`: `{files, commit_message,
-report}`). **p2a itself does the git work deterministically** (agents' sandboxes
-usually forbid network and `.git` writes): verify each listed file is inside the
-project and actually changed, then if `projects.auto_commit` run
-`git add -- <files>` + `git commit -m <msg> -- <files>` (never touching other
-uncommitted changes), and if `projects.auto_push` and the branch has an
-upstream, `git push` (no force; failure is recorded, not retried blindly).
-The result (`files, commit, pushed, report, error`) is saved to
-`filings/<id>-<project>.json`. Routes below threshold go to
-`inbox/<id>.md` and are listed by `p2a inbox`; `p2a route <rec-id> <project>`
-files them manually.
+### 5.5 Exit codes
 
-Each `actions[]` entry becomes a `pending` task (or auto-runs if
-`tasks.require_approval = false`). CLI:
-```
-p2a tasks [--all]                 # list pending (or all)
-p2a tasks show ID
-p2a tasks approve ID [-m NOTE]    # → runs agent in project dir with prompts/run_task.md,
-                                  #   same JSON result + deterministic commit/push as filing
-p2a tasks reject ID [-m NOTE]
-```
+`0` means success; `1` means an operation failed (phone, transfer, ASR or
+diagnostics); `2` means usage/configuration error, including missing pairing;
+`130` means interrupted. An empty listing is successful.
 
-### 5.10 Pipeline & daemon — `pipeline.py`, `notify.py`
+## 6. Privacy
 
-`p2a run` = one pass: sync → for each recording due: transcribe → analyze →
-dispatch; then run approved tasks. `p2a daemon` loops every
-`sync.interval_s`, single instance via a lock file in `data_dir`. Stages run
-sequentially (one GPU, one agent at a time, configurable later). `p2a status`
-shows counts per status, last sync, failures. `p2a retry ID`.
-`notify.command` (argv template with `{title}`, `{body}`) is called for: new
-pending task, filing done, recording failed permanently. Systemd user unit in
-`pc/contrib/systemd/p2a.service`.
-
-## 6. Privacy & safety defaults
-
-- Phone server is read-only, token-protected, binds all interfaces; recommend
-  Tailscale or a trusted LAN (HTTP is not encrypted on plain Wi-Fi).
-- Audio, transcripts and analyses stay in `data_dir`. Only `notes_markdown`
-  (key points) goes into project repos unless configured otherwise.
-- The analysis agent runs read-only; filing agents are confined to one project
-  directory; tasks run only after explicit approval by default.
-- Recording calls may require consent of all parties in your jurisdiction.
+The phone API is read-only and token-protected. Plain HTTP requires a trusted
+network or encrypted transport. Recordings and transcripts remain local; do not
+upload phone content elsewhere without asking. Models may download on first
+use. Recording consent requirements remain the owner's responsibility.

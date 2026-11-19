@@ -36,7 +36,7 @@ val dev by sourceSets.creating {
 
 tasks.register<JavaExec>("devServer") {
     group = "application"
-    description = "Runs the phone2agent HTTP server against a desktop directory."
+    description = "Runs the tentacle HTTP server against a desktop directory."
     classpath = dev.runtimeClasspath
-    mainClass = "dev.phone2agent.core.dev.DevServerKt"
+    mainClass = "dev.tentacle.core.dev.DevServerKt"
 }

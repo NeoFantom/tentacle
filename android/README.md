@@ -5,7 +5,7 @@ It uses Kotlin and Android framework views, follows the system light/dark
 appearance through DeviceDefault themes, and has no AndroidX, Material or
 third-party runtime libraries. Kotlin's standard library is the only runtime
 library beyond `:core` and Android. The application id and label are
-`dev.phone2agent` and `phone2agent`; version is `0.1.0` (code 1), minimum API 26,
+`dev.tentacle` and `Tentacle`; version is `0.2.0` (code 2), minimum API 26,
 compile/target API 35. JDK 21 builds Java 17 bytecode; JUnit is test-only.
 
 ## Build
@@ -24,8 +24,8 @@ APK outputs are `app/build/outputs/apk/debug/app-debug.apk` and
 `app/build/outputs/apk/release/app-release-unsigned.apk` (or `app-release.apk`
 when signed). Release is unsigned
 when signing settings are absent; debug uses normal Android debug signing.
-To sign a release, provide all four of `P2A_KEYSTORE`,
-`P2A_KEYSTORE_PASSWORD`, `P2A_KEY_ALIAS`, and `P2A_KEY_PASSWORD` through Gradle
+To sign a release, provide all four of `TENTACLE_KEYSTORE`,
+`TENTACLE_KEYSTORE_PASSWORD`, `TENTACLE_KEY_ALIAS`, and `TENTACLE_KEY_PASSWORD` through Gradle
 properties (prefer private user Gradle properties) or environment variables.
 Properties take precedence. Partial signing configuration fails with a message;
 secrets are never printed by the build script.
@@ -46,7 +46,7 @@ The foreground service listens on all interfaces, default port 8765, with a
 persistent low-importance notification containing its best address and a Stop
 action. The screen lists IPv4 pairing links, preferring Wi-Fi/Ethernet, then
 addresses in the Tailscale CGNAT range, then other interfaces. Copy a link and
-run `p2a pair '<copied link>'` on the computer. Tokens are masked until Show;
+run `tentacle pair '<copied link>'` on the computer. Tokens are masked until Show;
 clipboard copies contain the complete token and are marked sensitive on API
 33+. Regeneration requires confirmation and invalidates the previous token
 immediately, including while the server runs. Preferences are private and
@@ -76,7 +76,7 @@ readable directory, port (0 chooses an ephemeral port), and a nonempty test toke
 ./gradlew :core:devServer --args="--root $ROOT --port $PORT --token $TOKEN"
 ```
 
-The process prints a `p2a://` pairing link for localhost and blocks until stopped
+The process prints a `tentacle://` pairing link for localhost and blocks until stopped
 with Ctrl-C. Use it with the normal PC CLI (`pair`, `ping`, `ls`, `find`, `get`,
 `discover`); it exposes only the supplied root and the same read-only API.
 
@@ -86,20 +86,20 @@ With an API 35 emulator running, install the debug APK and grant storage access:
 
 ```sh
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell appops set dev.phone2agent MANAGE_EXTERNAL_STORAGE allow
-adb shell pm grant dev.phone2agent android.permission.POST_NOTIFICATIONS
+adb shell appops set dev.tentacle MANAGE_EXTERNAL_STORAGE allow
+adb shell pm grant dev.tentacle android.permission.POST_NOTIFICATIONS
 adb shell mkdir -p /sdcard/MIUI/sound_recorder/call_rec
 adb push "$FIXTURE" /sdcard/MIUI/sound_recorder/call_rec/
-adb shell am start -n dev.phone2agent/.MainActivity --ez autostart true
+adb shell am start -n dev.tentacle/.MainActivity --ez autostart true
 adb forward tcp:18765 tcp:8765
 ```
 
 `autostart` is honoured only by debug builds. The service remains unexported;
 release builds ignore that extra. For a disposable emulator only, read its token
-with `adb shell run-as dev.phone2agent cat shared_prefs/phone2agent.xml`, without
+with `adb shell run-as dev.tentacle cat shared_prefs/tentacle.xml`, without
 logging or publishing it. Configure the PC client URL to `http://127.0.0.1:18765`
-and token through its `token_env` setting. Check `p2a ping`, `p2a ls`,
-`p2a find --ext mp3`, `p2a get`, and `p2a discover`; `p2a ls Android/data` must
+and token through its `token_env` setting. Check `tentacle ping`, `tentacle ls`,
+`tentacle find --ext mp3`, `tentacle get`, and `tentacle discover`; `tentacle ls Android/data` must
 fail cleanly with 403. Inspect the screen using `adb exec-out screencap -p`, keep
 screenshots locally outside tracked files, then remove the forward and stop
 the emulator. Also exercise Start/Stop, token regeneration, permissions after

@@ -14,6 +14,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "phone2agent"
+rootProject.name = "tentacle"
 
 include(":core", ":app")

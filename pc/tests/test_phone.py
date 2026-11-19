@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from phone2agent.config import PhoneConfig
-from phone2agent.phone import PhoneClient, PhoneError, parse_pair_string
+from tentacle.config import PhoneConfig
+from tentacle.phone import PhoneClient, PhoneError, parse_pair_string
 
 from tests.fakephone import FakePhone
 
@@ -40,7 +40,7 @@ class _Response:
 class PairStringTests(unittest.TestCase):
     def test_pair_uri(self):
         self.assertEqual(
-            parse_pair_string("p2a://phone.local:8765?token=a%2Bb&name=My%20Phone"),
+            parse_pair_string("tentacle://phone.local:8765?token=a%2Bb&name=My%20Phone"),
             ("http://phone.local:8765", "a+b", "My Phone"),
         )
 
@@ -50,13 +50,19 @@ class PairStringTests(unittest.TestCase):
             ("https://phone.example:8765", "secret", ""),
         )
 
+    def test_http_url_preserves_path_prefix(self):
+        self.assertEqual(
+            parse_pair_string("https://example.com/tentacle/", "secret"),
+            ("https://example.com/tentacle", "secret", ""),
+        )
+
     def test_invalid_pair_strings(self):
         for value in (
-            "p2a://phone.local:8765?name=Phone",
-            "p2a://phone.local?token=t",
+            "tentacle://phone.local:8765?name=Phone",
+            "tentacle://phone.local?token=t",
             "ftp://phone.local:8765",
             "http://phone.local",
-            "http://phone.local:8765/path",
+            "http://phone.local:8765/path?query=invalid",
         ):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 parse_pair_string(value)
@@ -102,6 +108,50 @@ class PhoneClientTests(unittest.TestCase):
         self.assertEqual(self.client.read_bytes("Music/hello.txt", 5), b"hello")
         self.assertEqual(self.client.read_bytes("Music/empty.txt", 5), b"")
         self.assertEqual(self.client.read_bytes("Music/hello.txt", 0), b"")
+
+    def test_ping_is_cached_and_rejects_other_apps(self):
+        expected = self.client.ping()
+        with mock.patch.object(self.client, "_json") as request:
+            self.assertIs(self.client.ping(), expected)
+            request.assert_not_called()
+        client = PhoneClient(PhoneConfig(url=self.server.url, token="t", timeout_s=2))
+        with mock.patch.object(client, "_json", return_value={"app": "other"}):
+            with self.assertRaises(PhoneError) as caught:
+                client.ping()
+        self.assertEqual(caught.exception.code, "wrong_app")
+        with mock.patch.object(client, "_json", return_value={"app": "tentacle", "api": 2}):
+            with self.assertRaises(PhoneError) as caught:
+                client.ping()
+        self.assertEqual(caught.exception.code, "unsupported_api")
+
+    def test_operations_reject_wrong_app_before_access(self):
+        with FakePhone(self.root, token="t", app="other") as server:
+            client = PhoneClient(PhoneConfig(url=server.url, token="t", timeout_s=2))
+            operations = (
+                lambda: client.ls("Music"),
+                lambda: client.read_bytes("Music/hello.txt", 5),
+                lambda: client.download("Music/hello.txt", self.root / "wrong-app.txt"),
+            )
+            for operation in operations:
+                with self.subTest(operation=operation), self.assertRaises(PhoneError) as caught:
+                    operation()
+                self.assertEqual(caught.exception.code, "wrong_app")
+        self.assertFalse((self.root / "wrong-app.txt").exists())
+
+    def test_path_prefix_and_find_specific_timeout(self):
+        client = PhoneClient(PhoneConfig(
+            url="https://example.com/tentacle/", token="t", timeout_s=3,
+            find_timeout_s=120,
+        ))
+        ping = _Response(b'{"app": "tentacle", "api": 1}')
+        response = _Response(b'{"entries": []}')
+        with mock.patch.object(client._opener, "open", side_effect=[ping, response]) as opened:
+            client.find(root="Recordings")
+        request, = opened.call_args.args
+        self.assertEqual(request.full_url, "https://example.com/tentacle/v1/find?root=Recordings&type=file&hidden=0")
+        self.assertEqual(request.get_header("User-agent"), "tentacle/0.2.0")
+        self.assertEqual(opened.call_args.kwargs["timeout"], 120)
+        self.assertEqual(opened.call_args_list[0].kwargs["timeout"], 3)
 
     def test_find_filters_depth_hidden_sort_and_truncation(self):
         shallow = self.client.find(root="Music", type="file", max_depth=1, sort="name")
