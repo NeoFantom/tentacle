@@ -40,6 +40,11 @@ the tunnel leg.
 
 - Host, port (default 22), user, remote bind port (default 8765 on
   `127.0.0.1`).
+- The SSH host must reach the server directly. If your web domain sits behind
+  an HTTP CDN/proxy (e.g. Cloudflare's orange cloud), SSH on that name goes to
+  the CDN and never arrives: the app stays on "connecting", the host key stays
+  untrusted, and the server's sshd log shows nothing. Use the server's IP or a
+  DNS-only name for the SSH host; the public URL can still be the CDN name.
 - Key: the app generates its own key pair on first use (ECDSA P-256, private
   key never leaves the app) and shows the public key in OpenSSH format with a
   copy button. Password auth is not supported.
