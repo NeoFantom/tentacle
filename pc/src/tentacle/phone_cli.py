@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import importlib
+import os
 import shutil
 import sys
 import tempfile
@@ -16,6 +17,17 @@ from . import config
 from .phone import PhoneClient, PhoneError, parse_pair_string
 from .timeutil import from_ms, parse_since, to_ms
 
+
+
+def _get_destination(phone_path: str, dest: str | None) -> Path:
+    """Like cp/scp: an existing directory or a trailing slash means DEST/<basename>."""
+    name = PurePosixPath(phone_path).name
+    if not dest:
+        return Path(name)
+    target = Path(dest)
+    if dest.endswith(("/", os.sep)) or target.is_dir():
+        return target / name
+    return target
 
 def _nonnegative(text: str) -> int:
     value = int(text)
@@ -215,7 +227,7 @@ def _run(args, cfg) -> int:
                                      limit=args.limit, max_depth=args.max_depth,
                                      type=args.type, sort=args.sort, hidden=args.hidden)
             elif args.cmd == "get":
-                dest = Path(args.dest) if args.dest else Path(PurePosixPath(args.path).name)
+                dest = _get_destination(args.path, args.dest)
                 downloaded = client.download(args.path, dest, resume=not args.no_resume)
                 result = {"path": args.path, "dest": str(downloaded)}
             elif args.cmd == "cat":

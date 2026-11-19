@@ -109,6 +109,20 @@ class PhoneCliTests(unittest.TestCase):
         finally:
             os.chdir(original)
 
+    def test_get_into_directory_like_cp(self):
+        out_dir = Path(self.tmp.name) / "out"
+        out_dir.mkdir()
+        for dest in (str(out_dir), str(out_dir) + "/"):
+            result = self.run_json("get", "note.txt", dest)
+            self.assertEqual(result["dest"], str(out_dir / "note.txt"))
+            self.assertEqual((out_dir / "note.txt").read_bytes(), b"hello\nworld\n")
+            self.assertFalse(Path(str(out_dir) + ".part").exists())
+            self.assertEqual(sorted(p.name for p in out_dir.iterdir()), ["note.txt"])
+        new_dir = Path(self.tmp.name) / "new" / "dir"
+        result = self.run_json("get", "note.txt", str(new_dir) + "/")
+        self.assertEqual(result["dest"], str(new_dir / "note.txt"))
+        self.assertTrue((new_dir / "note.txt").is_file())
+
     def test_pair_creates_missing_config_and_preserves_existing(self):
         missing = Path(self.tmp.name) / "nested" / "new.toml"
         address = self.server.url.replace("http://", "tentacle://") + "?token=t&name=Test%20device"
