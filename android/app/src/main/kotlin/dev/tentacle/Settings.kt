@@ -105,6 +105,14 @@ class Settings(context: Context) {
                 ?.let { "https://api.github.com/repos/$it/releases/latest" }.orEmpty()
         set(value) { prefs.edit().putString("update_source", value).apply() }
 
+    var dismissedUpdateVersion: String
+        get() = prefs.getString("dismissed_update_version", "")!!
+        set(value) { prefs.edit().putString("dismissed_update_version", value).apply() }
+
+    var lastAutomaticUpdateCheckMillis: Long
+        get() = prefs.getLong("last_automatic_update_check_millis", 0L)
+        set(value) { prefs.edit().putLong("last_automatic_update_check_millis", value).apply() }
+
     /** Xiaomi autostart cannot be detected; the "needs attention" item hides once its page was opened. */
     var autostartOpened: Boolean
         get() = prefs.getBoolean("autostart_opened", false)

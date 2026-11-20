@@ -46,7 +46,9 @@ import dev.tentacle.tunnel.TunnelStatus
 import dev.tentacle.update.AppUpdater
 import dev.tentacle.update.ReleaseAsset
 import dev.tentacle.update.ReleaseInfo
+import dev.tentacle.update.Releases
 import dev.tentacle.update.UpdateState
+import dev.tentacle.update.UpdatePrompt
 import java.net.InetAddress
 
 /**
@@ -128,6 +130,7 @@ class MainActivity : Activity() {
     private lateinit var boot: Switch
     private lateinit var updateStatusText: TextView
     private lateinit var checkUpdates: Button
+    private lateinit var updateSourceField: EditText
 
     private var statusSubscription: AutoCloseable? = null
     private var tunnelSubscription: AutoCloseable? = null
@@ -136,6 +139,9 @@ class MainActivity : Activity() {
     private var requestSubscription: AutoCloseable? = null
     private var openLoginWhenReady = false
     private var installRequested = false
+    private var activityVisible = false
+    private var updatePromptDialog: AlertDialog? = null
+    private var debugUpdateSourceChanged = false
     private var tokenVisible = false
     private var updating = false
     private var lastTunnelError: TunnelStatus.Error? = null
@@ -173,6 +179,17 @@ class MainActivity : Activity() {
     private fun handleDebugIntent(intent: Intent) {
         if (!BuildConfig.DEBUG) return
         // Test hooks for emulator end-to-end runs and screenshots; release builds ignore them.
+        if (intent.getBooleanExtra("reset_update_prompt", false)) {
+            settings.dismissedUpdateVersion = ""
+            shownUpdatePromptVersions.clear()
+            intent.removeExtra("reset_update_prompt")
+        }
+        intent.getStringExtra("update_source")?.let {
+            settings.updateSource = it.trim()
+            updateSourceField.setText(settings.updateSource)
+            debugUpdateSourceChanged = true
+            intent.removeExtra("update_source")
+        }
         var tailnetChanged = false
         intent.getStringExtra("tailnet_control_url")?.let { settings.tailnetControlUrl = it.trim(); tailnetChanged = true }
         intent.getStringExtra("tailnet_auth_key")?.let { settings.tailnetAuthKey = it.trim(); tailnetChanged = true }
@@ -246,9 +263,13 @@ class MainActivity : Activity() {
         refresh()
     }
 
-    /** Debug only: pretend an update was found, to see the banner without a release server. */
+    /** Debug only: exercise update checks or inject availability without a release server. */
     private fun handleDebugUpdate(intent: Intent) {
         if (!BuildConfig.DEBUG) return
+        if (debugUpdateSourceChanged) {
+            debugUpdateSourceChanged = false
+            AppUpdater.check(this, force = true)
+        }
         val version = intent.getStringExtra("fake_update") ?: return
         AppUpdater.publish(UpdateState.Available(ReleaseInfo(version,
             ReleaseAsset("tentacle-$version.apk", "https://example.com/tentacle-$version.apk", 1), null)))
@@ -266,8 +287,12 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        activityVisible = true
         ServerService.refreshNotificationChannel(this)
         AppUpdater.refreshNotificationChannel(this)
+        val returningFromInstallPermission = AppUpdater.state is UpdateState.PermissionRequired
+        AppUpdater.refreshInstallPermission(this)
+        if (!returningFromInstallPermission) AppUpdater.check(this)
         statusSubscription = ServerStatus.observe { runOnUiThread { refresh(it) } }
         tunnelSubscription = TunnelStatus.observe { runOnUiThread { refresh() } }
         tailnetSubscription = TailnetStatus.observe { state -> runOnUiThread {
@@ -278,6 +303,7 @@ class MainActivity : Activity() {
             }
         } }
         updateSubscription = AppUpdater.observe { state -> runOnUiThread {
+            if (!activityVisible) return@runOnUiThread
             refresh()
             if (installRequested && state is UpdateState.Available) {
                 installRequested = false
@@ -285,6 +311,7 @@ class MainActivity : Activity() {
             } else if (state is UpdateState.Error || state is UpdateState.Disabled || state is UpdateState.UpToDate) {
                 installRequested = false
             }
+            maybeShowUpdatePrompt()
         } }
         requestSubscription = requestStore.observe { runOnUiThread { refreshRequests() } }
         requestRefreshActive = true
@@ -294,6 +321,9 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        activityVisible = false
+        updatePromptDialog?.dismiss()
+        updatePromptDialog = null
         tunnelSubscription?.close()
         tunnelSubscription = null
         tailnetSubscription?.close()
@@ -364,7 +394,7 @@ class MainActivity : Activity() {
     private fun updateBannerSection() {
         updateBanner = card().apply { background = rounded(color(R.color.accent_container), 20) }
         updateBannerText = text(updateBanner, "", 16f, bold = true).apply { setTextColor(color(R.color.on_accent_container)) }
-        installUpdate = button(updateBanner, getString(R.string.install_update), ButtonKind.PRIMARY, fill = true) {
+        installUpdate = button(updateBanner, getString(R.string.update_now), ButtonKind.PRIMARY, fill = true) {
             AppUpdater.downloadAndInstall(this)
         }
         allowUpdates = button(updateBanner, getString(R.string.unknown_apps), ButtonKind.OUTLINE, fill = true) {
@@ -737,22 +767,30 @@ class MainActivity : Activity() {
         button(logRow, getString(R.string.view), ButtonKind.OUTLINE) { showAppLog() }
         button(logRow, getString(R.string.clear), ButtonKind.OUTLINE) { confirmClearAppLog() }
             .also { (it.layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) }
-        val source = field(body, R.string.update_source, settings.updateSource, getString(R.string.update_source_hint))
+        updateSourceField = field(body, R.string.update_source, settings.updateSource, getString(R.string.update_source_hint))
         button(body, getString(R.string.save_update_source), ButtonKind.TONAL, fill = true) {
-            settings.updateSource = source.text.toString().trim()
+            settings.updateSource = updateSourceField.text.toString().trim()
             AppUpdater.check(this, manual = true)
         }.also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(10) }
     }
 
     private fun footerSection() {
-        val footer = row(content).apply {
-            gravity = Gravity.CENTER_VERTICAL
+        val footer = column().apply {
             setPadding(dp(4), dp(4), 0, 0)
+            content.addView(this, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
-        updateStatusText = text(footer, "", 13f, secondary = true).apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        updateStatusText = text(footer, "", 13f, secondary = true)
+        checkUpdates = button(footer, getString(R.string.check_updates), ButtonKind.OUTLINE, fill = true) {
+            when (AppUpdater.state) {
+                is UpdateState.Available -> AppUpdater.downloadAndInstall(this)
+                is UpdateState.PermissionRequired -> {
+                    if (packageManager.canRequestPackageInstalls()) AppUpdater.downloadAndInstall(this)
+                    else AppUpdater.openUnknownSources(this)
+                }
+                UpdateState.Checking, is UpdateState.Downloading, is UpdateState.Installing -> Unit
+                else -> AppUpdater.check(this, manual = true)
+            }
         }
-        checkUpdates = button(footer, getString(R.string.check_updates), ButtonKind.OUTLINE) { AppUpdater.check(this, manual = true) }
     }
 
     // ---------------------------------------------------------------- state
@@ -936,6 +974,46 @@ class MainActivity : Activity() {
         updateStatusText.text = getString(R.string.version, BuildConfig.VERSION_NAME) + " · " + AppUpdater.stateText(this)
         // Without an update source there is nothing to check.
         checkUpdates.visibility = if (settings.updateSource.isBlank()) View.GONE else View.VISIBLE
+        checkUpdates.text = when (updateState) {
+            UpdateState.Checking -> getString(R.string.update_checking)
+            is UpdateState.Available -> getString(R.string.update_now_version, updateState.release.version)
+            is UpdateState.Downloading -> updateState.percent?.let { getString(R.string.update_downloading_percent, it) }
+                ?: getString(R.string.update_downloading)
+            is UpdateState.PermissionRequired -> if (needsPermission) getString(R.string.update_allow_installs)
+                else getString(R.string.update_now_version, updateState.release.version)
+            is UpdateState.Installing -> getString(R.string.update_installing)
+            else -> getString(R.string.check_updates)
+        }
+        styleButton(checkUpdates, if (updateState is UpdateState.Available || updateState is UpdateState.PermissionRequired ||
+            updateState is UpdateState.Downloading || updateState is UpdateState.Installing) ButtonKind.PRIMARY else ButtonKind.OUTLINE)
+        checkUpdates.isEnabled = updateState !is UpdateState.Checking && updateState !is UpdateState.Downloading &&
+            updateState !is UpdateState.Installing
+        checkUpdates.alpha = if (checkUpdates.isEnabled) 1f else 0.5f
+    }
+
+    private fun maybeShowUpdatePrompt() {
+        val state = AppUpdater.state
+        if (state !is UpdateState.Available) {
+            updatePromptDialog?.dismiss()
+            updatePromptDialog = null
+            return
+        }
+        if (!activityVisible || isFinishing || isDestroyed || installRequested || settings.updateSource.isBlank()) return
+        val version = state.release.version
+        if (!UpdatePrompt.shouldShow(version, settings.dismissedUpdateVersion, state.manual,
+                updatePromptDialog != null || shownUpdatePromptVersions.any { Releases.compareVersions(it, version) == 0 },
+                busy = false)) return
+        shownUpdatePromptVersions += version
+        updatePromptDialog = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.update_prompt_title, version))
+            .setMessage(R.string.update_prompt_message)
+            .setPositiveButton(R.string.update_now) { _, _ -> AppUpdater.downloadAndInstall(this) }
+            .setNegativeButton(R.string.update_later) { _, _ -> settings.dismissedUpdateVersion = version }
+            .setOnCancelListener { settings.dismissedUpdateVersion = version }
+            .create().also { dialog ->
+                dialog.setOnDismissListener { if (updatePromptDialog === dialog) updatePromptDialog = null }
+                dialog.show()
+            }
     }
 
     private fun publicPairingUrl(): String? = settings.publicUrl.takeIf {
@@ -1448,6 +1526,7 @@ class MainActivity : Activity() {
         }
 
     private companion object {
+        val shownUpdatePromptVersions = mutableSetOf<String>()
         const val REQUEST_DRAFT_STATE = "request_draft"
         const val REQUEST_REFRESH_MS = 10_000L
     }

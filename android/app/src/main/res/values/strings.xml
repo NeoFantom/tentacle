@@ -191,8 +191,17 @@
 
     <!-- Updates -->
     <string name="version">Tentacle %1$s</string>
-    <string name="check_updates">Check now</string>
-    <string name="install_update">Install update</string>
+    <string name="check_updates">Check for updates</string>
+    <string name="update_now">Update now</string>
+    <string name="update_now_version">Update now (%1$s)</string>
+    <string name="update_allow_installs">Allow installs</string>
+    <string name="update_checking">Checking…</string>
+    <string name="update_downloading">Downloading…</string>
+    <string name="update_downloading_percent">Downloading… %1$d%%</string>
+    <string name="update_installing">Installing…</string>
+    <string name="update_prompt_title">New version %1$s is available</string>
+    <string name="update_prompt_message">Update now to get the latest fixes. Your settings stay as they are.</string>
+    <string name="update_later">Later</string>
     <string name="unknown_apps">Allow installing updates</string>
     <string name="update_channel_name">App updates</string>
     <string name="update_status_idle">Updates have not been checked yet</string>

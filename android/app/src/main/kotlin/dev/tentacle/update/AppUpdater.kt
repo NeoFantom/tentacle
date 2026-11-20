@@ -39,7 +39,7 @@ sealed interface UpdateState {
     data object Disabled : UpdateState
     data object Checking : UpdateState
     data object UpToDate : UpdateState
-    data class Available(val release: ReleaseInfo) : UpdateState
+    data class Available(val release: ReleaseInfo, val manual: Boolean = false) : UpdateState
     data class Downloading(val release: ReleaseInfo, val percent: Int?) : UpdateState
     data class PermissionRequired(val release: ReleaseInfo) : UpdateState
     data class Installing(val release: ReleaseInfo) : UpdateState
@@ -56,6 +56,8 @@ object AppUpdater {
     private val busy = AtomicBoolean(false)
     private val initialized = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var checkInProgress = false
+    private var pendingCheckManual: Boolean? = null
 
     @Volatile private var application: Application? = null
     @Volatile private var foregroundActivities = 0
@@ -94,15 +96,27 @@ object AppUpdater {
         check(app)
     }
 
-    fun check(context: Context, manual: Boolean = false) {
+    @Synchronized
+    fun check(context: Context, manual: Boolean = false, force: Boolean = false) {
         val app = context.applicationContext
-        val source = Settings(app).updateSource.trim()
+        if (state is UpdateState.Downloading || state is UpdateState.Installing ||
+            (!manual && state is UpdateState.PermissionRequired)) return
+        val settings = Settings(app)
+        val source = settings.updateSource.trim()
         if (source.isEmpty()) {
             lastRelease = null
             publish(UpdateState.Disabled)
             return
         }
-        if (!busy.compareAndSet(false, true)) return
+        val now = System.currentTimeMillis()
+        if (!manual && !force && !UpdatePrompt.shouldCheckAutomatically(settings.lastAutomaticUpdateCheckMillis, now)) return
+        if (!busy.compareAndSet(false, true)) {
+            // Explicit requests retain their own origin when an earlier check is still running.
+            if (checkInProgress && (manual || force)) pendingCheckManual = manual
+            return
+        }
+        checkInProgress = true
+        if (!manual) settings.lastAutomaticUpdateCheckMillis = now
         lastRelease = null
         publish(UpdateState.Checking)
         executor.execute {
@@ -112,30 +126,43 @@ object AppUpdater {
                 when {
                     currentSource.isEmpty() -> UpdateState.Disabled
                     currentSource != source -> UpdateState.Idle
-                    Releases.compareVersions(release.version, BuildConfig.VERSION_NAME) > 0 -> {
-                        lastRelease = release
-                        UpdateState.Available(release)
-                    }
+                    Releases.compareVersions(release.version, BuildConfig.VERSION_NAME) > 0 -> UpdateState.Available(release, manual)
                     else -> UpdateState.UpToDate
                 }
             } catch (_: Exception) {
                 UpdateState.Error(UpdateError.CHECK_FAILED)
-            } finally {
-                busy.set(false)
             }
-            // Observers can start downloading immediately once availability is delivered.
-            publish(result)
-            if (result is UpdateState.Available && foregroundActivities == 0) notifyAvailable(app, result.release)
+            mainHandler.post {
+                synchronized(this) {
+                    // Observers can start downloading immediately once availability is delivered.
+                    busy.set(false)
+                    checkInProgress = false
+                    val pendingManual = pendingCheckManual
+                    pendingCheckManual = null
+                    when {
+                        pendingManual != null -> check(app, pendingManual, force = true)
+                        Settings(app).updateSource.trim() != source -> check(app, manual, force = true)
+                        else -> {
+                            if (result is UpdateState.Available) lastRelease = result.release
+                            publish(result)
+                            if (result is UpdateState.Available && foregroundActivities == 0) notifyAvailable(app, result.release)
+                        }
+                    }
+                }
+            }
         }
     }
 
     fun downloadAndInstall(activity: Activity) {
         val release = available ?: return
+        if (state is UpdateState.Downloading || state is UpdateState.Installing ||
+            !busy.compareAndSet(false, true)) return
         if (!activity.packageManager.canRequestPackageInstalls()) {
+            busy.set(false)
             publish(UpdateState.PermissionRequired(release))
             return
         }
-        if (!busy.compareAndSet(false, true)) return
+        publish(UpdateState.Downloading(release, null))
         executor.execute {
             try {
                 val apk = download(activity.applicationContext, release)
@@ -159,6 +186,14 @@ object AppUpdater {
 
     fun openUnknownSources(activity: Activity) {
         activity.startActivity(Intent(SystemSettings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")))
+    }
+
+    fun refreshInstallPermission(activity: Activity) {
+        val current = state
+        if (current is UpdateState.PermissionRequired && activity.packageManager.canRequestPackageInstalls()) {
+            // Returning from settings is part of an explicit install action, not an automatic discovery.
+            publish(UpdateState.Available(current.release, manual = true))
+        }
     }
 
     fun observe(listener: (UpdateState) -> Unit): AutoCloseable {
