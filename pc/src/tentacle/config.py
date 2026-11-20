@@ -5,6 +5,7 @@ themselves."""
 from __future__ import annotations
 
 import dataclasses
+import math
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -83,6 +84,53 @@ class AsrConfig:
     command: list[str] = field(default_factory=list)
 
 
+_DEFAULT_REQUEST_PROTECTED = [
+    ".github/**",
+    "**/*.jks",
+    "**/*.keystore",
+    "**/*.p12",
+    "android/app/src/main/kotlin/dev/tentacle/update/**",
+    "android/core/src/main/kotlin/dev/tentacle/core/Tokens.kt",
+]
+
+
+@dataclass
+class RequestsConfig:
+    command: str = ""
+    shell: list[str] = field(default_factory=lambda: ["bash", "-lc"])
+    repo: str = ""
+    release: str = ""
+    test: str = ""
+    push: str = "git push"
+    timeout_s: float = 7200
+    prompt_template: str = ""
+    protected: list[str] = field(default_factory=lambda: list(_DEFAULT_REQUEST_PROTECTED))
+
+    def __post_init__(self) -> None:
+        string_fields = ("command", "repo", "release", "test", "push", "prompt_template")
+        for name in string_fields:
+            if not isinstance(getattr(self, name), str):
+                raise ConfigError(f"[requests] {name} must be a string")
+        if not self.push.strip():
+            raise ConfigError("[requests] push must not be empty")
+        if (not isinstance(self.shell, list) or not self.shell
+                or not all(isinstance(part, str) and part for part in self.shell)):
+            raise ConfigError("[requests] shell must be a non-empty array of non-empty strings")
+        if (isinstance(self.timeout_s, bool) or not isinstance(self.timeout_s, (int, float))
+                or not math.isfinite(self.timeout_s) or self.timeout_s <= 0):
+            raise ConfigError("[requests] timeout_s must be a positive finite number")
+        if not isinstance(self.protected, list) or not all(isinstance(item, str) for item in self.protected):
+            raise ConfigError("[requests] protected must be an array of strings")
+
+    @property
+    def repo_path(self) -> Path | None:
+        return Path(_expand(self.repo)) if self.repo else None
+
+    @property
+    def prompt_template_path(self) -> Path | None:
+        return Path(_expand(self.prompt_template)) if self.prompt_template else None
+
+
 @dataclass
 class Config:
     phone: PhoneConfig = field(default_factory=PhoneConfig)
@@ -90,6 +138,7 @@ class Config:
     sources: list[SourceConfig] = field(default_factory=list)
     calls: CallsConfig = field(default_factory=CallsConfig)
     asr: AsrConfig = field(default_factory=AsrConfig)
+    requests: RequestsConfig = field(default_factory=RequestsConfig)
     path: Path | None = None  # file this config was loaded from
 
     @property
@@ -98,7 +147,8 @@ class Config:
 
 
 _SECTIONS = {
-    "phone": PhoneConfig, "storage": StorageConfig, "calls": CallsConfig, "asr": AsrConfig,
+    "phone": PhoneConfig, "storage": StorageConfig, "calls": CallsConfig,
+    "asr": AsrConfig, "requests": RequestsConfig,
 }
 
 

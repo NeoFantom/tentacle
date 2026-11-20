@@ -9,6 +9,8 @@ Use `tentacle` to access the phone's read-only file API and local transcription
 cache. Phone paths can be relative to shared storage (`Download`, `DCIM/Camera`)
 or absolute (`/storage/emulated/0/...`). Configuration is discoverable through
 `tentacle config path` and `tentacle config show` (secrets masked).
+Run `tentacle requests list` to see what the phone owner has asked the computer
+to change; do not start the watcher or act on a request unless explicitly asked.
 
 ## Questions about calls
 

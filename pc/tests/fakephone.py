@@ -38,13 +38,29 @@ class _Server(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(
-        self, address, root: Path, token: str, timezone: str, clock_offset_s: float, app: str,
+        self,
+        address,
+        root: Path,
+        token: str,
+        timezone: str,
+        clock_offset_s: float,
+        app: str,
+        requests: list[dict[str, object]],
+        request_logs: dict[str, bytes],
+        request_updates: list[tuple[str, str, str]],
+        request_condition: threading.Condition,
+        claim_conflicts: set[str],
     ):
         self.root = root.resolve(strict=True)
         self.token = token
         self.timezone = timezone
         self.clock_offset_s = clock_offset_s
         self.app = app
+        self.requests = requests
+        self.request_logs = request_logs
+        self.request_updates = request_updates
+        self.request_condition = request_condition
+        self.claim_conflicts = claim_conflicts
         super().__init__(address, _Handler)
 
 
@@ -62,14 +78,16 @@ class _Handler(BaseHTTPRequestHandler):
         self._at_request_boundary(self._dispatch, head=True)
 
     def do_POST(self) -> None:
+        self._at_request_boundary(self._dispatch_post)
+
+    def do_PUT(self) -> None:
         self._at_request_boundary(self._method_not_allowed)
 
-    do_PUT = do_POST
-    do_PATCH = do_POST
-    do_DELETE = do_POST
-    do_OPTIONS = do_POST
-    do_TRACE = do_POST
-    do_CONNECT = do_POST
+    do_PATCH = do_PUT
+    do_DELETE = do_PUT
+    do_OPTIONS = do_PUT
+    do_TRACE = do_PUT
+    do_CONNECT = do_PUT
 
     def _at_request_boundary(self, action, **kwargs) -> None:
         try:
@@ -87,8 +105,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_error(
             HTTPStatus.METHOD_NOT_ALLOWED,
             "method_not_allowed",
-            "Only GET and file HEAD requests are supported",
-            headers={"Allow": "GET, HEAD"},
+            "Method not allowed",
+            headers={"Allow": "GET, HEAD, POST"},
         )
 
     def _dispatch(self, *, head: bool) -> None:
@@ -110,8 +128,30 @@ class _Handler(BaseHTTPRequestHandler):
                 self._find(query)
             elif parsed.path == "/v1/file":
                 self._file(query, head=head)
+            elif parsed.path == "/v1/requests":
+                self._requests(query)
+            elif re.fullmatch(r"/v1/requests/[A-Za-z0-9_-]{1,64}/log", parsed.path):
+                self._request_log(parsed.path.split("/")[-2], query)
             else:
                 raise _ApiError(404, "not_found", "Endpoint not found")
+        except _ApiError as exc:
+            self._send_error(exc.status, exc.code, exc.message)
+        except (BrokenPipeError, ConnectionResetError):
+            raise
+        except (OSError, ValueError) as exc:
+            self._send_error(500, "internal", str(exc) or "Internal server error")
+
+    def _dispatch_post(self) -> None:
+        try:
+            if not self._authorized():
+                raise _ApiError(401, "unauthorized", "Invalid bearer token")
+            parsed = urlsplit(self.path)
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            self._require_no_unknown(query, set())
+            match = re.fullmatch(r"/v1/requests/([A-Za-z0-9_-]{1,64})", parsed.path)
+            if match is None:
+                raise _ApiError(404, "not_found", "Endpoint not found")
+            self._update_request(match.group(1))
         except _ApiError as exc:
             self._send_error(exc.status, exc.code, exc.message)
         except (BrokenPipeError, ConnectionResetError):
@@ -365,6 +405,82 @@ class _Handler(BaseHTTPRequestHandler):
             extensions.add(value.casefold())
         return extensions
 
+    def _requests(self, query: dict[str, list[str]]) -> None:
+        self._require_no_unknown(query, {"wait"})
+        wait_s = self._int(query, "wait", 0, minimum=0, maximum=60)
+        assert wait_s is not None
+        deadline = time.monotonic() + wait_s
+        with self.server.request_condition:
+            while wait_s and not any(item["status"] == "new" for item in self.server.requests):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.server.request_condition.wait(remaining)
+            requests = [dict(item) for item in reversed(self.server.requests)]
+        self._send_json(
+            200,
+            {"requests": requests, "now_ms": time.time_ns() // 1_000_000},
+        )
+
+    def _update_request(self, request_id: str) -> None:
+        raw_length = self.headers.get("Content-Length", "")
+        if not raw_length.isdigit():
+            raise _ApiError(400, "bad_request", "Content-Length is required")
+        length = int(raw_length)
+        if length > 16 * 1024:
+            raise _ApiError(400, "bad_request", "Request body is too large")
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise _ApiError(400, "bad_request", "Body must be valid JSON") from None
+        if not isinstance(body, dict) or set(body) != {"status", "message"}:
+            raise _ApiError(400, "bad_request", "Body must contain status and message")
+        status = body["status"]
+        message = body["message"]
+        if status not in {"working", "done", "failed", "new"}:
+            raise _ApiError(400, "bad_request", "Invalid request status")
+        if not isinstance(message, str) or len(message) > 1000:
+            raise _ApiError(400, "bad_request", "Invalid request message")
+
+        allowed = {
+            "new": {"working", "failed"},
+            "working": {"done", "failed", "new"},
+            "done": set(),
+            "failed": set(),
+        }
+        with self.server.request_condition:
+            request = next(
+                (item for item in self.server.requests if item["id"] == request_id), None,
+            )
+            if request is None:
+                raise _ApiError(404, "not_found", "Request not found")
+            if status == "working" and request_id in self.server.claim_conflicts:
+                raise _ApiError(409, "conflict", "Request was claimed elsewhere")
+            if status not in allowed[str(request["status"])]:
+                raise _ApiError(409, "conflict", "Request transition is not allowed")
+            request["status"] = status
+            request["message"] = message
+            request["updated_ms"] = time.time_ns() // 1_000_000
+            self.server.request_updates.append((request_id, status, message))
+            reply = dict(request)
+            self.server.request_condition.notify_all()
+        self._send_json(200, reply)
+
+    def _request_log(self, request_id: str, query: dict[str, list[str]]) -> None:
+        self._require_no_unknown(query, set())
+        with self.server.request_condition:
+            request = next(
+                (item for item in self.server.requests if item["id"] == request_id), None,
+            )
+            body = self.server.request_logs.get(request_id)
+        if request is None or body is None:
+            raise _ApiError(404, "not_found", "Request log not found")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _file(self, query: dict[str, list[str]], *, head: bool) -> None:
         self._require_no_unknown(query, {"path"})
         value = self._one(query, "path", None)
@@ -471,8 +587,52 @@ class FakePhone:
         self.clock_offset_s = clock_offset_s
         self.app = app
         self.url = ""
+        self._requests: list[dict[str, object]] = []
+        self._request_logs: dict[str, bytes] = {}
+        self.request_updates: list[tuple[str, str, str]] = []
+        self.claim_conflicts: set[str] = set()
+        self._request_condition = threading.Condition()
+        self._next_request = 1
         self._server: _Server | None = None
         self._thread: threading.Thread | None = None
+
+    @property
+    def requests(self) -> list[dict[str, object]]:
+        with self._request_condition:
+            return [dict(item) for item in self._requests]
+
+    def add_request(
+        self,
+        text: str = "Change the app",
+        kind: str = "feature",
+        *,
+        log: str | bytes | None = None,
+        **overrides: object,
+    ) -> dict[str, object]:
+        """Inject a phone-created request and wake any long poll."""
+        now_ms = time.time_ns() // 1_000_000
+        with self._request_condition:
+            request_id = f"r-{now_ms}-{self._next_request}"
+            self._next_request += 1
+            request: dict[str, object] = {
+                "id": request_id,
+                "kind": kind,
+                "scope": "tentacle-requests/1",
+                "text": text,
+                "created_ms": now_ms,
+                "updated_ms": now_ms,
+                "status": "new",
+                "message": "",
+                "has_log": log is not None,
+            }
+            request.update(overrides)
+            self._requests.append(request)
+            if log is not None:
+                self._request_logs[str(request["id"])] = (
+                    log.encode("utf-8") if isinstance(log, str) else log
+                )
+            self._request_condition.notify_all()
+            return dict(request)
 
     def start(self) -> "FakePhone":
         if self._server is not None:
@@ -482,6 +642,8 @@ class FakePhone:
         self._server = _Server(
             ("127.0.0.1", 0), self.root_dir, self.token,
             self.timezone, self.clock_offset_s, self.app,
+            self._requests, self._request_logs, self.request_updates,
+            self._request_condition, self.claim_conflicts,
         )
         host, port = self._server.server_address[:2]
         self.url = f"http://{host}:{port}"

@@ -18,6 +18,7 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Semaphore
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -28,8 +29,11 @@ class HttpServer(
     private val tokenProvider: () -> String,
     private val api: FileApi,
     private val info: () -> PingInfo,
+    private val requestStore: RequestStore? = null,
 ) {
     @Volatile var logger: (String) -> Unit = {}
+    @Volatile var accessLogger: (String, String, Int, Long, Long) -> Unit = { _, _, _, _, _ -> }
+    private val longPollSlots = Semaphore(2)
     @Volatile private var listener: ServerSocket? = null
     private var workers: ThreadPoolExecutor? = null
     private var acceptThread: Thread? = null
@@ -114,26 +118,71 @@ class HttpServer(
     }
 
     private fun serve(socket: Socket) {
+        val started = System.nanoTime()
+        var method = ""
+        var route = ""
+        var response: ResponseOutput? = null
         var head = false
         var committed = false
         try {
             val input = BufferedInputStream(socket.getInputStream())
-            val output = socket.getOutputStream().buffered()
+            val output = ResponseOutput(socket.getOutputStream().buffered())
+            response = output
             try {
                 val request = readRequest(input)
+                method = request.method
+                route = request.target.substringBefore('?')
                 head = request.method == "HEAD"
                 authenticate(request.headers["authorization"])
-                val route = request.target.substringBefore('?')
-                if (request.method != "GET" && !(head && route == "/v1/file")) {
+                val updateId = REQUEST_UPDATE.matchEntire(route)?.groupValues?.get(1)
+                val logId = REQUEST_LOG.matchEntire(route)?.groupValues?.get(1)
+                if (request.method != "GET" && !(head && route == "/v1/file") &&
+                    !(request.method == "POST" && updateId != null)) {
                     throw ApiException(405, "method_not_allowed", "Method is not allowed", mapOf(
-                        "Allow" to if (route == "/v1/file") "GET, HEAD" else "GET",
+                        "Allow" to when {
+                            route == "/v1/file" -> "GET, HEAD"
+                            updateId != null -> "POST"
+                            else -> "GET"
+                        },
                     ))
                 }
-                if (route !in setOf("/v1/ping", "/v1/ls", "/v1/stat", "/v1/find", "/v1/file")) {
+                if ((route !in setOf("/v1/ping", "/v1/ls", "/v1/stat", "/v1/find", "/v1/file", "/v1/requests") &&
+                    updateId == null && logId == null) || (updateId != null && request.method != "POST")) {
                     throw ApiException(404, "not_found")
                 }
                 val query = parseQuery(request.target.substringAfter('?', ""))
-                if (route == "/v1/file") {
+                if (route == "/v1/requests" || updateId != null || logId != null) {
+                    val store = requestStore ?: throw ApiException(404, "not_found")
+                    if (logId != null) {
+                        val body = store.log(logId).toByteArray(Charsets.UTF_8)
+                        committed = true
+                        writeHeaders(output, 200, linkedMapOf(
+                            "Content-Type" to "text/plain; charset=utf-8", "Content-Length" to body.size.toString(),
+                        ))
+                        output.write(body)
+                    } else {
+                        val result = if (updateId != null) {
+                            val body = readJsonBody(input, request.headers) as? Map<*, *>
+                                ?: throw ApiException(400, "bad_request", "Expected a JSON object")
+                            val status = body["status"] as? String
+                                ?: throw ApiException(400, "bad_request", "Provide a request status")
+                            val message = body["message"] as? String
+                                ?: throw ApiException(400, "bad_request", "Provide a plain text message")
+                            store.update(updateId, status, message).toJson()
+                        } else {
+                            val wait = query.integer("wait", 0)
+                            if (wait !in 0..60) throw ApiException(400, "bad_request", "Wait must be between 0 and 60 seconds")
+                            store.recordPoll()
+                            // At most two workers wait; file requests and updates always retain capacity.
+                            if (wait > 0 && longPollSlots.tryAcquire()) {
+                                try { store.awaitNew(wait * 1000L) } finally { longPollSlots.release() }
+                            }
+                            linkedMapOf("requests" to store.list().map { it.toJson() }, "now_ms" to System.currentTimeMillis())
+                        }
+                        committed = true
+                        writeJson(output, 200, Json.stringify(result).toByteArray(Charsets.UTF_8), false)
+                    }
+                } else if (route == "/v1/file") {
                     api.openFile(query["path"] ?: "", request.headers["range"]).use { file ->
                         val headers = linkedMapOf(
                             "Content-Type" to file.contentType,
@@ -188,6 +237,37 @@ class HttpServer(
             log("HTTP connection closed")
         } finally {
             close(socket)
+            try {
+                accessLogger(method, route, response?.status ?: 400, response?.bodyBytes ?: 0,
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
+            } catch (_: Exception) { /* Logging must not interrupt requests. */ }
+        }
+    }
+
+    private fun readJsonBody(input: InputStream, headers: Map<String, String>): Any? {
+        if (headers.containsKey("transfer-encoding")) throw ApiException(400, "bad_request", "Chunked bodies are not supported")
+        val rawLength = headers["content-length"] ?: throw ApiException(411, "bad_request", "Provide Content-Length")
+        if (!rawLength.matches(Regex("[0-9]+"))) throw ApiException(400, "bad_request", "Invalid Content-Length")
+        val length = rawLength.toLongOrNull() ?: throw ApiException(413, "bad_request", "Body exceeds 16 KiB")
+        if (length > 16 * 1024) throw ApiException(413, "bad_request", "Body exceeds 16 KiB")
+        if (headers["content-type"]?.substringBefore(';')?.trim()?.lowercase(Locale.ROOT) != "application/json") {
+            throw ApiException(400, "bad_request", "Use application/json")
+        }
+        val bytes = ByteArray(length.toInt())
+        var offset = 0
+        while (offset < bytes.size) {
+            val read = input.read(bytes, offset, bytes.size - offset)
+            if (read < 0) throw ApiException(400, "bad_request", "Incomplete request body")
+            offset += read
+        }
+        return try {
+            val text = Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString()
+            Json.parse(text)
+        } catch (_: java.nio.charset.CharacterCodingException) {
+            throw ApiException(400, "bad_request", "Invalid UTF-8 body")
+        } catch (_: Json.ParseException) {
+            throw ApiException(400, "bad_request", "Invalid JSON body")
         }
     }
 
@@ -317,6 +397,9 @@ class HttpServer(
             403 -> "Forbidden"
             404 -> "Not Found"
             405 -> "Method Not Allowed"
+            409 -> "Conflict"
+            411 -> "Length Required"
+            413 -> "Payload Too Large"
             416 -> "Range Not Satisfiable"
             431 -> "Request Header Fields Too Large"
             else -> "Internal Server Error"
@@ -326,7 +409,9 @@ class HttpServer(
             headers.forEach { (name, value) -> append("$name: $value\r\n") }
             append("Connection: close\r\n\r\n")
         }
+        if (output is ResponseOutput) output.status = status
         output.write(text.toByteArray(Charsets.US_ASCII))
+        if (output is ResponseOutput) output.headerBytes = output.count
         log("HTTP response $status")
     }
 
@@ -343,7 +428,22 @@ class HttpServer(
         try { logger(message) } catch (_: Exception) { /* Logging must not interrupt requests. */ }
     }
 
+    private class ResponseOutput(private val delegate: OutputStream) : OutputStream() {
+        var status = 400
+        var count = 0L
+        var headerBytes = 0L
+        val bodyBytes: Long get() = (count - headerBytes).coerceAtLeast(0)
+        override fun write(value: Int) { delegate.write(value); count++ }
+        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+            delegate.write(bytes, offset, length)
+            count += length
+        }
+        override fun flush() = delegate.flush()
+    }
+
     private companion object {
+        val REQUEST_UPDATE = Regex("/v1/requests/([A-Za-z0-9_-]{1,64})")
+        val REQUEST_LOG = Regex("/v1/requests/([A-Za-z0-9_-]{1,64})/log")
         val TOKEN = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
     }
 }

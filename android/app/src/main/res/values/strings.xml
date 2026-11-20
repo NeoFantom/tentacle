@@ -5,6 +5,9 @@
     <string name="save">Save</string>
     <string name="copy">Copy</string>
     <string name="copied">Copied</string>
+    <string name="view">View</string>
+    <string name="clear">Clear</string>
+    <string name="close">Close</string>
     <string name="settings_unavailable">This settings page isn\'t available on this phone. Open Android Settings → Apps → Tentacle instead.</string>
 
     <!-- Status card -->
@@ -59,6 +62,34 @@
     <string name="tailscale">Tailscale</string>
     <string name="other">Other</string>
     <string name="public_connection">Own server</string>
+
+    <!-- Requests from the app -->
+    <string name="requests_title">Ask your computer for a change</string>
+    <string name="requests_scope">Only changes to this Tentacle app and its computer tool; anything else is refused.</string>
+    <string name="requests_hint">Describe the change you want, or what went wrong…</string>
+    <string name="requests_counter">%1$d / %2$d</string>
+    <string name="requests_send">Send</string>
+    <string name="requests_bug">Upload log &amp; fix</string>
+    <string name="requests_sent">Sent to your computer</string>
+    <string name="requests_invalid">Shorten the text to 1000 words or CJK characters and remove control characters.</string>
+    <string name="requests_save_failed">Could not save the request. Try again.</string>
+    <string name="requests_checked">Computer checked %1$s ago</string>
+    <string name="requests_last_checked">Computer last checked %1$s ago</string>
+    <string name="requests_never_checked">No computer has checked yet — run `tentacle requests watch` on it (see README)</string>
+    <string name="requests_server_note">The computer can only see requests while the file server is running.</string>
+    <string name="requests_empty">Your requests will appear here.</string>
+    <string name="requests_more">More</string>
+    <string name="requests_kind_change">Change</string>
+    <string name="requests_kind_bug">Bug fix</string>
+    <string name="requests_status_waiting">Waiting for the computer</string>
+    <string name="requests_status_working">Computer is working on it</string>
+    <string name="requests_status_done">Done</string>
+    <string name="requests_status_failed">Failed</string>
+    <string name="requests_time_ago">%1$s ago</string>
+    <string name="requests_age_seconds">%1$d s</string>
+    <string name="requests_age_minutes">%1$d min</string>
+    <string name="requests_age_hours">%1$d h</string>
+    <string name="requests_age_days">%1$d d</string>
 
     <!-- Ways to connect -->
     <string name="ways_title">Ways to connect</string>
@@ -151,6 +182,12 @@
     <string name="update_source">Update source</string>
     <string name="update_source_hint">Empty = no update checks</string>
     <string name="save_update_source">Save update source</string>
+    <string name="app_log">App log</string>
+    <string name="app_log_empty">The app log is empty.</string>
+    <string name="app_log_clear_title">Clear the app log?</string>
+    <string name="app_log_clear_message">This removes the diagnostic history stored by Tentacle.</string>
+    <string name="app_log_cleared">App log cleared</string>
+    <string name="app_log_failed">Could not read or change the app log. Try again.</string>
 
     <!-- Updates -->
     <string name="version">Tentacle %1$s</string>

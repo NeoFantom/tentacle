@@ -103,13 +103,79 @@ File listings and `calls` support `--json`. Human times use the phone's timezone
 Exit codes: `0` success (including empty lists), `1` operation failure,
 `2` usage/configuration error, `130` interrupted.
 
+## Requests from the app
+
+The phone owner can ask for a Tentacle change or attach an app log to a bug
+report. A configured computer watcher claims one request, runs a coding agent in
+the Tentacle repository, checks the commit and protected paths, runs the
+configured tests, then pushes and releases it. Push and release are performed by
+the watcher after those checks; the coding agent must never do either one.
+
+Configure a generic agent command and repository, then optionally install the
+systemd user service:
+
+```bash
+tentacle requests setup \
+  --command "my-agent --prompt-file {prompt_file}" \
+  --repo ~/src/tentacle \
+  --release "scripts/release.sh" \
+  --install-service
+```
+
+There is no default agent command, and `requests watch` refuses to start until
+one is configured. Without systemd, run `tentacle requests watch` in a durable
+terminal or use the manual command printed by `setup`. `tentacle requests list`
+shows recent requests; `tentacle requests watch --once` handles at most one
+request and `tentacle requests run-once` is its alias.
+
+A command defined as an interactive Bash function can be used by selecting an
+interactive shell. For example, if a local Bash startup file defines `cx`, use:
+
+```bash
+tentacle requests setup --shell "bash -ic" --command "cx exec -" --repo ~/src/tentacle
+```
+
+The prompt remains on standard input; Bash may print harmless job-control
+warnings when it is interactive without a terminal. The command may instead use
+`{prompt_file}`, `{result_file}`, `{log_file}` and `{repo}` placeholders.
+
+Request text is limited to 1000 shared CJK/word units and 8000 UTF-16 code
+units. The watcher validates the fixed `tentacle-requests/1` scope, treats phone
+text and logs as untrusted data, wraps request text between random boundaries,
+and places fixed non-overridable repository rules before and after it. This
+scope lock is defense in depth: it reduces prompt-injection risk but cannot
+eliminate it.
+
+The watcher stores each run under `<data_dir>/requests/<id>/`. A stale request
+that this computer left in `working` is failed at startup with a clear restart
+message; another computer's claim is left alone. If an agent makes no commit,
+it must begin `result.txt` with `Done:` for a successful no-code-needed result,
+or `Failed:` for a refusal, unclear request, or a bug whose cause could not be
+found. The watcher removes this metadata prefix before showing the result on the
+phone. A no-commit result without either prefix fails conservatively.
+
+If a request creates commits but later fails a safety check, the watcher records
+that rejected `HEAD` in `<data_dir>/requests-blocked.json`. Later requests for
+the same checkout fail while that commit remains an ancestor of `HEAD`, so a
+later run cannot accidentally push rejected changes. The watcher never rewrites
+or resets repository history; the maintainer reviews and removes failed commits
+manually. If interrupted history cannot be verified, an unconditional blocker
+requires review of the checkout and the marker before more requests can run.
+
+**Security:** anyone who can use the unlocked app can make this computer run
+the configured agent with that agent's permissions. Keep the agent sandboxed
+where possible, use a dedicated repository checkout, and review local commits
+and releases. The scope lock and protected-path checks reduce risk but do not
+make arbitrary agent execution safe.
+
 ## Configuration and local cache
 
 Lookup: `--config PATH`, then `TENTACLE_CONFIG`, then
 `$XDG_CONFIG_HOME/tentacle/config.toml` (default
 `~/.config/tentacle/config.toml`). See the commented
-[config template](pc/src/tentacle/config.example.toml). Settings cover `[phone]`,
-`[storage]`, `[[sources]]`, `[calls]` and `[asr]`. Tokens can be supplied inline,
+[config template](pc/src/tentacle/config.example.toml). Settings cover
+`[phone]`, `[storage]`, `[[sources]]`, `[calls]`, `[asr]` and `[requests]`.
+Tokens can be supplied inline,
 from a file or via an environment variable. `config show` masks the token.
 `TENTACLE_ASR_VERBOSE=1` enables verbose ASR output.
 

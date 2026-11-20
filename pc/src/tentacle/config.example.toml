@@ -61,3 +61,23 @@ initial_prompt = ""            # faster-whisper only: vocabulary hint (names, ja
 hotwords = []                  # funasr only: hotword list (names, project terms)
 command = []                   # backend="command": argv template, placeholders {input} {output}
 
+[requests]
+# No agent command is supplied by default. Configure one with
+# `tentacle requests setup --command "..."`; the watcher refuses to run without it.
+command = ""
+shell = ["bash", "-lc"]        # use ["bash", "-ic"] for a function from interactive bash startup
+repo = ""
+release = ""                   # empty skips release
+test = ""                      # empty skips an extra watcher-run test command
+push = "git push"
+timeout_s = 7200               # shared budget for agent, test, push and release
+prompt_template = ""           # replaces only the middle prompt template, never the fixed rules
+protected = [
+  ".github/**",
+  "**/*.jks",
+  "**/*.keystore",
+  "**/*.p12",
+  "android/app/src/main/kotlin/dev/tentacle/update/**",
+  "android/core/src/main/kotlin/dev/tentacle/core/Tokens.kt",
+]
+

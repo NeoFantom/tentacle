@@ -1,4 +1,4 @@
-"""HTTP client for the read-only tentacle API.
+"""HTTP client for the tentacle API.
 
 ``PhoneClient`` instances are cheap and cache only their phone's ping response.
 The caller supplies the central ``PhoneConfig``; this module never reads config
@@ -119,7 +119,6 @@ class PhoneClient:
         self.last_round_trip_ms: float | None = None
         self._use_system_proxy = bool(phone_cfg.use_system_proxy)
         self.paths = PathSelector(phone_cfg, cache_dir)
-        self._retried = False
         self.url = ""
         if not self.paths.multiple:
             self._set_url(self.paths.urls[0] if self.paths.urls else "")
@@ -171,7 +170,9 @@ class PhoneClient:
         *,
         method: str = "GET",
         headers: dict[str, str] | None = None,
+        data: bytes | None = None,
         timeout: float | None = None,
+        _retried: bool = False,
     ):
         self._ensure_paired()
         if endpoint != "ping" and self._ping_cache is None:
@@ -185,30 +186,50 @@ class PhoneClient:
             "User-Agent": f"tentacle/{__version__}",
         }
         request_headers.update(headers or {})
-        request = urllib.request.Request(url, headers=request_headers, method=method)
+        request = urllib.request.Request(url, headers=request_headers, data=data, method=method)
         try:
             return self._opener.open(request, timeout=self.timeout if timeout is None else timeout)
         except urllib.error.HTTPError as exc:
             raise self._http_error(exc) from exc
         except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
             error = self._transport_error(exc)
-            if not self.paths.multiple or self._retried:
+            if not self.paths.multiple or _retried:
                 raise error from exc
         # The chosen path stopped working: forget it and retry once on another.
-        self._retried = True
         failed = self.url
         self.paths.invalidate()
         try:
             self.select_path(exclude=(failed,))
         except PhoneError:
             raise error from None
-        return self._open(endpoint, params, method=method, headers=headers, timeout=timeout)
+        return self._open(
+            endpoint,
+            params,
+            method=method,
+            headers=headers,
+            data=data,
+            timeout=timeout,
+            _retried=True,
+        )
 
     def _json(
-        self, endpoint: str, params: dict[str, Any] | None = None, *, timeout: float | None = None,
+        self,
+        endpoint: str,
+        params: dict[str, Any] | None = None,
+        *,
+        method: str = "GET",
+        body: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
+        data = None
+        headers = None
+        if body is not None:
+            data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            headers = {"Content-Type": "application/json; charset=utf-8"}
         try:
-            with self._open(endpoint, params, timeout=timeout) as response:
+            with self._open(
+                endpoint, params, method=method, headers=headers, data=data, timeout=timeout,
+            ) as response:
                 payload = json.load(response)
         except PhoneError:
             raise
@@ -249,6 +270,52 @@ class PhoneClient:
 
     def stat(self, path: str) -> dict[str, Any]:
         return self._json("stat", {"path": path})
+
+    def requests(self, wait: int = 0) -> dict[str, Any]:
+        """List app requests, optionally waiting for a new request."""
+        wait_s = max(0, min(60, int(wait)))
+        payload = self._json(
+            "requests",
+            {"wait": wait_s},
+            timeout=max(self.timeout, wait_s + 5),
+        )
+        requests = payload.get("requests")
+        if not isinstance(requests, list) or type(payload.get("now_ms")) is not int:
+            raise PhoneError("bad_response", "phone returned an invalid requests response", None)
+        required = {
+            "id": str,
+            "created_ms": int,
+            "updated_ms": int,
+            "status": str,
+            "message": str,
+            "has_log": bool,
+        }
+        for request in requests:
+            if not isinstance(request, dict) or any(
+                type(request.get(name)) is not expected for name, expected in required.items()
+            ):
+                raise PhoneError("bad_response", "phone returned an invalid request object", None)
+        return payload
+
+    def update_request(self, request_id: str, status: str, message: str) -> dict[str, Any]:
+        """Update one request's status and phone-visible message."""
+        endpoint = "requests/" + urllib.parse.quote(request_id, safe="")
+        return self._json(
+            endpoint,
+            method="POST",
+            body={"status": status, "message": message},
+        )
+
+    def request_log(self, request_id: str) -> bytes:
+        """Download the log snapshot attached to a bug request."""
+        endpoint = "requests/" + urllib.parse.quote(request_id, safe="") + "/log"
+        try:
+            with self._open(endpoint) as response:
+                return response.read()
+        except PhoneError:
+            raise
+        except (http.client.HTTPException, OSError) as exc:
+            raise self._transport_error(exc) from exc
 
     def find(
         self,

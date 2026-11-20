@@ -17,11 +17,12 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings as SystemSettings
+import dev.tentacle.AppLanguage
+import dev.tentacle.AppLog
 import dev.tentacle.BuildConfig
 import dev.tentacle.MainActivity
 import dev.tentacle.R
 import dev.tentacle.Settings
-import dev.tentacle.AppLanguage
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -190,6 +191,17 @@ object AppUpdater {
 
     internal fun publish(next: UpdateState) {
         state = next
+        when (next) {
+            UpdateState.Idle -> AppLog.append("Update state=idle")
+            UpdateState.Disabled -> AppLog.append("Update check=disabled")
+            UpdateState.Checking -> AppLog.append("Update check=started")
+            UpdateState.UpToDate -> AppLog.append("Update check=up to date")
+            is UpdateState.Available -> AppLog.append("Update check=available version=${next.release.version}")
+            is UpdateState.PermissionRequired -> AppLog.append("Update install=permission required")
+            is UpdateState.Installing -> AppLog.append("Update install=started version=${next.release.version}")
+            is UpdateState.Error -> AppLog.append("Update error=${next.kind}")
+            is UpdateState.Downloading -> Unit
+        }
         mainHandler.post { listeners.forEach { it(next) } }
         val app = application
         if (app != null && next is UpdateState.Downloading) notifyProgress(app, next)

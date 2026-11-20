@@ -42,3 +42,16 @@ the single source of truth for module boundaries and contracts.
 - Keep connection guidance in `docs/CONNECT.md`; it is the contract for the
   Android SSH-tunnel and embedded-Tailscale implementations and for the PC's
   path selection.
+
+## Requests from the app
+
+App requests arrive through `tentacle requests watch`. When its fixed prompt
+invokes a coding agent, read and obey that prompt: implement only the requested
+Tentacle change, add or update tests, run them, bump the patch versions, commit
+the result, and write the required 1–3 sentence phone-owner summary to
+`TENTACLE_RESULT_FILE`. Do not push or release; the watcher performs both after
+checking the commit. For a successful no-change result write `Done: ...`; for a
+refusal, unclear request, or unfound bug cause write `Failed: ...`.
+
+The computer-side configuration and fixed prompt live in
+`pc/src/tentacle/requests_cmd.py` and `pc/src/tentacle/config.py`.

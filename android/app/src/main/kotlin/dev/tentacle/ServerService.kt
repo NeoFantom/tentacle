@@ -52,16 +52,24 @@ class ServerService : Service() {
     override fun onCreate() {
         super.onCreate()
         settings = Settings(this)
+        AppLog.append("Server service created")
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, getString(R.string.file_channel), NotificationManager.IMPORTANCE_LOW),
         )
         AppUpdater.initialize(this)
         handler.postDelayed(updateCheck, 12 * 60 * 60 * 1000L)
-        tunnelSubscription = TunnelStatus.observe { handler.post { if (server?.isRunning == true) updateNotification() } }
-        tailnetSubscription = TailnetStatus.observe { handler.post { if (server?.isRunning == true) updateNotification() } }
+        tunnelSubscription = TunnelStatus.observe { state ->
+            AppLog.append("SSH tunnel state=${state.mode} error=${state.error ?: "none"}")
+            handler.post { if (server?.isRunning == true) updateNotification() }
+        }
+        tailnetSubscription = TailnetStatus.observe { state ->
+            AppLog.append("Tailscale state=${state.mode} error=${state.error ?: "none"}")
+            handler.post { if (server?.isRunning == true) updateNotification() }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        AppLog.append("Server service start action=${intent?.action ?: "start"}")
         if (intent?.action == ACTION_STOP) {
             stopSelf()
             return START_NOT_STICKY
@@ -78,6 +86,7 @@ class ServerService : Service() {
                     port = settings.port,
                     tokenProvider = { settings.token },
                     api = api,
+                    requestStore = RequestStores.get(this),
                     info = {
                         PingInfo(
                             version = BuildConfig.VERSION_NAME,
@@ -92,8 +101,12 @@ class ServerService : Service() {
                         )
                     },
                 )
+                next.accessLogger = { method, path, status, bytes, durationMs ->
+                    AppLog.append("HTTP $method $path status=$status bytes=$bytes duration_ms=$durationMs")
+                }
                 server = next
                 next.start()
+                AppLog.append("File server started")
                 settings.markStarted()
             }
             if (tunnel == null) {
@@ -113,6 +126,7 @@ class ServerService : Service() {
             watchNetworks()
         } catch (e: Exception) {
             android.util.Log.w("tentacle", "File server failed to start: ${e.message}")
+            AppLog.append("File server failed to start\n${e.stackTraceToString()}")
             ServerStatus.publish(ServerStatus.State(error = "server_failed"))
             stopSelf()
             return START_NOT_STICKY
@@ -123,10 +137,14 @@ class ServerService : Service() {
     private fun watchNetworks() {
         if (networkCallback != null) return
         val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = refresh()
-            override fun onLost(network: Network) = refresh()
-            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) = refresh()
-            private fun refresh() { handler.post { if (server?.isRunning == true) updateNotification() } }
+            override fun onAvailable(network: Network) = refresh("available")
+            override fun onLost(network: Network) = refresh("lost")
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) =
+                refresh("link properties changed")
+            private fun refresh(event: String) {
+                AppLog.append("Network $event")
+                handler.post { if (server?.isRunning == true) updateNotification() }
+            }
         }
         getSystemService(ConnectivityManager::class.java).registerNetworkCallback(
             NetworkRequest.Builder()
@@ -194,12 +212,14 @@ class ServerService : Service() {
         tailnet?.close()
         tailnet = null
         try { server?.stop() } finally {
+            if (server != null) AppLog.append("File server stopped")
             server = null
             releaseLocks()
         }
     }
 
     override fun onDestroy() {
+        AppLog.append("Server service stopping")
         networkCallback?.let { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) }
         networkCallback = null
         tunnelSubscription?.close()

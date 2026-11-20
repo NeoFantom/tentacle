@@ -7,8 +7,11 @@ Change an affected contract here before changing an implementation.
 
 Tentacle is a manual toolkit for a human or local agent to browse Android shared
 storage, pull call recordings, and transcribe audio locally on demand. The phone
-serves a read-only HTTP API; each PC command does its work and exits. There is no
-PC daemon, automatic analysis, project filing, or task queue.
+serves an HTTP API with read-only file access and request status updates.
+File commands do their work and exit; there is no background file analysis,
+project filing or file-processing task queue. The optional `requests watch`
+process stays running to handle changes requested in the app, as specified
+in [REQUESTS.md](REQUESTS.md).
 
 The automation implementation is preserved on `experimental/automation`.
 Connectivity options, including the Android SSH reverse tunnel and the embedded
@@ -34,7 +37,8 @@ lazy imports declared as package extras. Android uses Kotlin;
 `com.github.mwiede:jsch` and the in-repository Go bridge (`android/tsbridge`,
 built from source with gomobile; it pulls in `tailscale.com`) are the only
 runtime dependencies besides the framework, and both are confined to `:app`. The phone records nothing itself; existing recorders write
-the files exposed by this toolkit. The PC never writes to the phone.
+the files exposed by this toolkit. The PC can update app request status and messages;
+file access remains read-only.
 
 ## 3. Phone HTTP API v1 (contract between `android/` and `pc/`)
 
@@ -45,11 +49,17 @@ the files exposed by this toolkit. The PC never writes to the phone.
   constant time. Missing/wrong → `401 {"error":"unauthorized"}`.
 - Token: 32 random bytes, base64url without padding, generated on first launch,
   regenerable in the app.
-- Responses: JSON `application/json; charset=utf-8`, except `/v1/file`.
+- Responses: JSON `application/json; charset=utf-8`, except `/v1/file` and
+  attached request logs (`text/plain; charset=utf-8`).
 - Errors: `{"error": "<code>", "message": "<human text>"}` with status
   400 `bad_request` / 401 `unauthorized` / 403 `forbidden` (outside roots or no
-  permission) / 404 `not_found` / 416 `range_not_satisfiable` / 500 `internal`.
-- Read-only. Only `GET` (and `HEAD` for `/v1/file`). Other methods → 405.
+  permission) / 404 `not_found` / 409 `conflict` / 411 `bad_request` (missing
+  Content-Length) / 413 `bad_request` (body too large) /
+  416 `range_not_satisfiable` / 500 `internal`.
+- Files are read-only: `GET` (and `HEAD` for `/v1/file`). The only write is
+  `POST /v1/requests/<id>`, which updates a request status and message. Other
+  methods → 405. Request contracts, validation limits and transitions are in
+  [REQUESTS.md](REQUESTS.md).
 
 ### Paths
 
@@ -80,6 +90,9 @@ the files exposed by this toolkit. The PC never writes to the phone.
 | `GET /v1/stat` | `path` | `Entry` |
 | `GET /v1/find` | `root` (path, default primary), `ext` (comma list, case-insensitive, no dot), `name` (case-insensitive substring), `since_ms`, `until_ms`, `type=file\|dir\|any` (default file), `max_depth` (default 12), `limit` (default 500, max 5000), `sort=mtime_desc\|mtime_asc\|name` (default mtime_desc) | `{"root":..., "entries":[Entry...], "truncated": bool}`. Walk skips `Android/data`, `Android/obb`, hidden dirs unless `hidden=1`; never follows symlinks out of roots. |
 | `GET/HEAD /v1/file` | `path` | Raw bytes, `Content-Type` by extension (fallback `application/octet-stream`), `Content-Length`, `Last-Modified`, `ETag: "<size>-<mtime_ms>"`, `Accept-Ranges: bytes`. Supports single `Range: bytes=a-b` / `a-` / `-n` → 206 with `Content-Range`. |
+| `GET /v1/requests` | `wait=0..60` seconds | Newest-first requests and `now_ms`; optional long-poll for a `new` request, recording the last poll time. See [REQUESTS.md](REQUESTS.md). |
+| `POST /v1/requests/<id>` | JSON status and message, ≤ 16 KiB | Updated Request; invalid input → 400, unknown id → 404, disallowed transition → 409. See [REQUESTS.md](REQUESTS.md). |
+| `GET /v1/requests/<id>/log` | — | Attached snapshot as `text/plain; charset=utf-8`, or 404. See [REQUESTS.md](REQUESTS.md). |
 
 Directory listings of very large dirs are not paginated in v1 (find has `limit`).
 
@@ -98,6 +111,20 @@ The main screen puts one status card (plain-language state, a single
 Start/Stop action, the state of each way in) first, shows a "needs attention"
 card only while a permission is missing, and keeps per-address links, token,
 advanced and app settings collapsed.
+The request card creates feature requests and bug requests with a redacted log
+snapshot. `:core` owns request length validation, atomic app-private request
+storage (newest 20 with logs), and the request endpoints; no endpoint creates
+requests. A process-wide store lets the UI queue requests while the server is
+stopped and observes status updates while visible. At most two HTTP workers
+wait in long-polls so normal file access retains capacity.
+
+The app-private log (`filesDir/logs`, two files of 512 KiB) records service, HTTP,
+tunnel, Tailscale, network, update and crash events. Redaction happens before
+writing; HTTP access logs omit query strings and headers. Snapshots include app
+and Android versions, device information, time zone and current time. Settings
+can view, copy or clear the log. The application crash handler writes synchronously
+before delegating to the previous handler. See [REQUESTS.md](REQUESTS.md).
+
 The foreground notification keeps the server visible. The activity refreshes the
 actual service state when resumed and observes starts/stops while visible.
 Permission guidance reports actual grants, including all-files access,
@@ -290,7 +317,8 @@ diagnostics); `2` means usage/configuration error, including missing pairing;
 
 ## 6. Privacy
 
-The phone API is read-only and token-protected. Plain HTTP requires a trusted
+The phone API is token-protected. Files stay read-only; the only API write
+updates an app request status and message (see [REQUESTS.md](REQUESTS.md)). Plain HTTP requires a trusted
 network or encrypted transport. Recordings and transcripts remain local; do not
 upload phone content elsewhere without asking. Models may download on first
 use. Recording consent requirements remain the owner's responsibility.

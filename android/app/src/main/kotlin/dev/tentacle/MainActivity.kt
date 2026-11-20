@@ -17,7 +17,10 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings as SystemSettings
+import android.text.Editable
 import android.text.InputType
+import android.text.TextUtils
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -30,6 +33,9 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import dev.tentacle.core.IpAddresses
+import dev.tentacle.core.AppRequest
+import dev.tentacle.core.RequestStore
+import dev.tentacle.core.RequestText
 import dev.tentacle.core.ServerInfo
 import dev.tentacle.core.ServerInfoParser
 import dev.tentacle.tailnet.TailnetLogic
@@ -78,6 +84,17 @@ class MainActivity : Activity() {
     private lateinit var tokenText: TextView
     private lateinit var showToken: Button
 
+    private lateinit var requestStore: RequestStore
+    private lateinit var requestsCard: LinearLayout
+    private lateinit var requestText: EditText
+    private lateinit var requestCounter: TextView
+    private lateinit var requestSend: Button
+    private lateinit var requestServerNote: TextView
+    private lateinit var requestBug: Button
+    private lateinit var computerStatus: TextView
+    private lateinit var requestHistory: LinearLayout
+    private lateinit var requestsMore: Expander
+
     private lateinit var tailnetCard: LinearLayout
     private lateinit var tailnetSwitch: Switch
     private lateinit var tailnetStatusText: TextView
@@ -116,11 +133,20 @@ class MainActivity : Activity() {
     private var tunnelSubscription: AutoCloseable? = null
     private var tailnetSubscription: AutoCloseable? = null
     private var updateSubscription: AutoCloseable? = null
+    private var requestSubscription: AutoCloseable? = null
     private var openLoginWhenReady = false
     private var installRequested = false
     private var tokenVisible = false
     private var updating = false
     private var lastTunnelError: TunnelStatus.Error? = null
+    private var requestRefreshActive = false
+    private val requestRefresh = object : Runnable {
+        override fun run() {
+            if (!requestRefreshActive) return
+            refreshRequests()
+            scroll.postDelayed(this, REQUEST_REFRESH_MS)
+        }
+    }
     @Volatile private var cloudflareCheck = 0
 
     override fun attachBaseContext(base: Context) = super.attachBaseContext(AppLanguage.wrap(base))
@@ -128,7 +154,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = Settings(this)
+        requestStore = RequestStores.get(this)
         buildScreen()
+        savedInstanceState?.getString(REQUEST_DRAFT_STATE)?.let { requestText.setText(it) }
         handleDebugIntent(intent)
         AppUpdater.initialize(this)
         handleDebugUpdate(intent)
@@ -180,6 +208,7 @@ class MainActivity : Activity() {
             pasteBox.setText(it)
             recognize()
         }
+        intent.getStringExtra("request_text")?.let { requestText.setText(it) }
         intent.getStringExtra("expand")?.split(',')?.map(String::trim)?.forEach { name ->
             when (name) {
                 "more" -> connectMore.open = true
@@ -187,11 +216,13 @@ class MainActivity : Activity() {
                 "server" -> serverSetup.open = true
                 "keys" -> serverKeys.open = true
                 "settings" -> settingsBody.open = true
+                "requests_more" -> requestsMore.open = true
             }
         }
         intent.getStringExtra("scroll_to")?.let { name ->
             val target = when (name) {
                 "connect" -> connectCard
+                "requests" -> requestsCard
                 "tailnet" -> tailnetCard
                 "server" -> serverCard
                 "settings" -> settingsCard
@@ -205,6 +236,12 @@ class MainActivity : Activity() {
                     else -> scroll.fullScroll(View.FOCUS_DOWN)
                 }
             }, 400)
+        }
+        if (intent.getBooleanExtra("request_send", false)) requestSend.performClick()
+        if (intent.getBooleanExtra("request_bug", false)) requestBug.performClick()
+        if (intent.getBooleanExtra("crash_test", false)) {
+            intent.removeExtra("crash_test")
+            scroll.post { throw RuntimeException("Crash test") }
         }
         refresh()
     }
@@ -249,6 +286,11 @@ class MainActivity : Activity() {
                 installRequested = false
             }
         } }
+        requestSubscription = requestStore.observe { runOnUiThread { refreshRequests() } }
+        requestRefreshActive = true
+        scroll.removeCallbacks(requestRefresh)
+        scroll.post(requestRefresh)
+        refreshRequests()
     }
 
     override fun onPause() {
@@ -260,9 +302,18 @@ class MainActivity : Activity() {
         updateSubscription = null
         statusSubscription?.close()
         statusSubscription = null
+        requestSubscription?.close()
+        requestSubscription = null
+        requestRefreshActive = false
+        scroll.removeCallbacks(requestRefresh)
         tokenVisible = false
         refresh()
         super.onPause()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (::requestText.isInitialized) outState.putString(REQUEST_DRAFT_STATE, requestText.text.toString())
+        super.onSaveInstanceState(outState)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -301,6 +352,7 @@ class MainActivity : Activity() {
         heroSection()
         attentionSection()
         connectSection()
+        requestsSection()
         sectionLabel(getString(R.string.ways_title))
         text(content, getString(R.string.ways_lan_note), 14f, secondary = true).setPadding(dp(4), 0, dp(4), dp(10))
         tailnetSection()
@@ -377,6 +429,149 @@ class MainActivity : Activity() {
             Toast.makeText(this, R.string.no_network, Toast.LENGTH_LONG).show()
         } else copy(getString(R.string.copy_all_links), Pairing.uriAll(tailnet?.let { "http://$it:${settings.port}" },
             addresses, settings.port, publicPairingUrl(), settings.token, DeviceEnvironment.deviceName))
+    }
+
+    private fun requestsSection() {
+        requestsCard = card()
+        cardTitle(requestsCard, getString(R.string.requests_title))
+        text(requestsCard, getString(R.string.requests_scope), 14f, secondary = true)
+        requestText = EditText(this).apply {
+            hint = getString(R.string.requests_hint)
+            contentDescription = getString(R.string.requests_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            minLines = 3
+            maxLines = 8
+            gravity = Gravity.TOP or Gravity.START
+            textSize = 15f
+            styleField(this)
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = updateRequestInput()
+                override fun afterTextChanged(text: Editable?) = Unit
+            })
+            requestsCard.addView(this, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(10) })
+        }
+        requestCounter = text(requestsCard, "", 13f, secondary = true).apply { gravity = Gravity.END }
+        val actions = buttonRow(requestsCard)
+        requestSend = button(actions, getString(R.string.requests_send), ButtonKind.PRIMARY, fill = true) {
+            createRequest("feature")
+        }
+        requestBug = button(actions, getString(R.string.requests_bug), ButtonKind.OUTLINE, fill = true) {
+            createRequest("bug")
+        }
+        computerStatus = text(requestsCard, "", 14f).apply { setPadding(0, dp(12), 0, dp(4)) }
+        requestServerNote = text(requestsCard, getString(R.string.requests_server_note), 13f, secondary = true)
+        requestHistory = column().also { requestsCard.addView(it) }
+        requestsMore = expander(requestsCard, getString(R.string.requests_more))
+        updateRequestInput()
+        refreshRequests()
+    }
+
+    private fun updateRequestInput() {
+        if (!::requestText.isInitialized || !::requestCounter.isInitialized) return
+        val value = requestText.text.toString()
+        val units = RequestText.units(value)
+        val withinLimits = units <= RequestText.MAX_UNITS && value.length <= RequestText.MAX_CHARS
+        requestCounter.text = getString(R.string.requests_counter, units, RequestText.MAX_UNITS)
+        requestCounter.setTextColor(color(if (withinLimits) R.color.text_secondary else R.color.bad))
+        if (::requestSend.isInitialized) {
+            requestSend.isEnabled = value.isNotBlank() && requestTextValid(value, false)
+            requestSend.alpha = if (requestSend.isEnabled) 1f else 0.5f
+        }
+        if (::requestBug.isInitialized) {
+            requestBug.isEnabled = requestTextValid(value, true)
+            requestBug.alpha = if (requestBug.isEnabled) 1f else 0.5f
+        }
+    }
+
+    private fun requestTextValid(value: String, allowEmpty: Boolean): Boolean = try {
+        RequestText.validate(value, allowEmpty)
+        true
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun createRequest(kind: String) {
+        val value = requestText.text.toString()
+        val allowEmpty = kind == "bug"
+        if (!requestTextValid(value, allowEmpty)) {
+            Toast.makeText(this, R.string.requests_invalid, Toast.LENGTH_LONG).show()
+            return
+        }
+        try {
+            val log = if (kind == "bug") AppLog.snapshot() else null
+            requestStore.create(kind, value, log)
+            requestText.text.clear()
+            Toast.makeText(this, R.string.requests_sent, Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {
+            Toast.makeText(this, R.string.requests_save_failed, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun refreshRequests() {
+        if (!::requestHistory.isInitialized) return
+        val now = System.currentTimeMillis()
+        val lastPoll = requestStore.lastPolledMs
+        val (pollText, pollTone) = when {
+            lastPoll <= 0L -> getString(R.string.requests_never_checked) to Tone.WARN
+            now - lastPoll < 2 * 60_000L -> getString(R.string.requests_checked, relativeAge(now - lastPoll)) to Tone.GOOD
+            else -> getString(R.string.requests_last_checked, relativeAge(now - lastPoll)) to Tone.WARN
+        }
+        computerStatus.text = pollText
+        computerStatus.setTextColor(statusColor(pollTone))
+
+        val requests = requestStore.list()
+        requestHistory.removeAllViews()
+        requests.take(5).forEach { requestRow(requestHistory, it, now) }
+        if (requests.isEmpty()) {
+            text(requestHistory, getString(R.string.requests_empty), 13f, secondary = true)
+        }
+        requestsMore.body.removeAllViews()
+        requests.drop(5).forEach { requestRow(requestsMore.body, it, now) }
+        val hasMore = requests.size > 5
+        requestsMore.header.visibility = if (hasMore) View.VISIBLE else View.GONE
+        requestsMore.body.visibility = if (hasMore && requestsMore.open) View.VISIBLE else View.GONE
+    }
+
+    private fun requestRow(parent: LinearLayout, request: AppRequest, now: Long) {
+        val box = column().apply {
+            background = rounded(color(R.color.bg), 14)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        parent.addView(box, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply { topMargin = dp(8) })
+        val header = row(box).apply { gravity = Gravity.CENTER_VERTICAL }
+        text(header, getString(if (request.kind == "bug") R.string.requests_kind_bug else R.string.requests_kind_change),
+            14f, bold = true).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
+        text(header, getString(R.string.requests_time_ago, relativeAge(now - request.createdMs)), 12f, secondary = true)
+        if (request.text.isNotEmpty()) {
+            text(box, request.text, 14f).apply {
+                maxLines = 2
+                ellipsize = TextUtils.TruncateAt.END
+            }
+        }
+        val (status, tone) = when (request.status) {
+            "working" -> R.string.requests_status_working to Tone.BUSY
+            "done" -> R.string.requests_status_done to Tone.GOOD
+            "failed" -> R.string.requests_status_failed to Tone.BAD
+            else -> R.string.requests_status_waiting to Tone.WARN
+        }
+        text(box, getString(status), 14f, bold = true).setTextColor(statusColor(tone))
+        if (request.message.isNotEmpty()) text(box, request.message, 13f, secondary = true)
+    }
+
+    private fun relativeAge(ageMs: Long): String {
+        val seconds = ageMs.coerceAtLeast(0L) / 1000L
+        return when {
+            seconds < 60 -> getString(R.string.requests_age_seconds, seconds)
+            seconds < 60 * 60 -> getString(R.string.requests_age_minutes, seconds / 60)
+            seconds < 24 * 60 * 60 -> getString(R.string.requests_age_hours, seconds / (60 * 60))
+            else -> getString(R.string.requests_age_days, seconds / (24 * 60 * 60))
+        }
     }
 
     private fun tailnetSection() {
@@ -535,6 +730,13 @@ class MainActivity : Activity() {
         text(languageRow, getString(R.string.language), 15f).layoutParams =
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         button(languageRow, languageLabel(), ButtonKind.OUTLINE) { chooseLanguage() }
+        val logRow = row(body).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, 0) }
+        text(logRow, getString(R.string.app_log), 15f).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        button(logRow, getString(R.string.view), ButtonKind.OUTLINE) { showAppLog() }
+        button(logRow, getString(R.string.clear), ButtonKind.OUTLINE) { confirmClearAppLog() }
+            .also { (it.layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) }
         val source = field(body, R.string.update_source, settings.updateSource, getString(R.string.update_source_hint))
         button(body, getString(R.string.save_update_source), ButtonKind.TONAL, fill = true) {
             settings.updateSource = source.text.toString().trim()
@@ -559,6 +761,8 @@ class MainActivity : Activity() {
         if (!::updateStatusText.isInitialized) return
         val tailnet = TailnetStatus.value
         val tunnel = TunnelStatus.value
+        // Only worth saying while the server is off: then the computer cannot see new requests.
+        if (::requestServerNote.isInitialized) requestServerNote.visibility = if (state.running) View.GONE else View.VISIBLE
         val addresses = DeviceEnvironment.addresses(this)
         val lan = addresses.firstOrNull { it.priority == 0 }
         val filesAllowed = DeviceEnvironment.allFilesAccess(this)
@@ -920,6 +1124,49 @@ class MainActivity : Activity() {
             }.setNegativeButton(R.string.cancel, null).show()
     }
 
+    private fun showAppLog() {
+        val value = try {
+            AppLog.snapshot().lineSequence().toList().takeLast(300).joinToString("\n")
+                .ifEmpty { getString(R.string.app_log_empty) }
+        } catch (_: Exception) {
+            Toast.makeText(this, R.string.app_log_failed, Toast.LENGTH_LONG).show()
+            return
+        }
+        val logText = TextView(this).apply {
+            text = value
+            typeface = Typeface.MONOSPACE
+            textSize = 11f
+            setTextColor(color(R.color.text_primary))
+            setTextIsSelectable(true)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+        val logScroll = ScrollView(this).apply { addView(logText) }
+        // Newest lines are what matter: open at the end.
+        logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.app_log)
+            .setView(logScroll)
+            .setNegativeButton(R.string.close, null)
+            .setPositiveButton(R.string.copy) { _, _ -> copy(getString(R.string.app_log), value) }
+            .show()
+    }
+
+    private fun confirmClearAppLog() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.app_log_clear_title)
+            .setMessage(R.string.app_log_clear_message)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.clear) { _, _ ->
+                try {
+                    AppLog.clear()
+                    Toast.makeText(this, R.string.app_log_cleared, Toast.LENGTH_SHORT).show()
+                } catch (_: Exception) {
+                    Toast.makeText(this, R.string.app_log_failed, Toast.LENGTH_LONG).show()
+                }
+            }
+            .show()
+    }
+
     private fun copy(label: String, value: String) {
         val clip = ClipData.newPlainText(label, value)
         if (Build.VERSION.SDK_INT >= 33) {
@@ -1199,4 +1446,9 @@ class MainActivity : Activity() {
                 if (parent.orientation == LinearLayout.HORIZONTAL) ViewGroup.LayoutParams.WRAP_CONTENT else ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT))
         }
+
+    private companion object {
+        const val REQUEST_DRAFT_STATE = "request_draft"
+        const val REQUEST_REFRESH_MS = 10_000L
+    }
 }

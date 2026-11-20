@@ -24,17 +24,20 @@ class HttpServerTest {
 
     private lateinit var root: Path
     private lateinit var server: HttpServer
+    private lateinit var requests: RequestStore
     private val loopback: String = InetAddress.getLoopbackAddress().hostAddress
     private var token = "test-token"
 
     @BeforeEach
     fun startServer() {
         root = Files.createDirectory(tempDir.resolve("primary"))
+        requests = RequestStore(tempDir.resolve("requests").toFile())
         server = HttpServer(
             port = 0,
             bind = loopback,
             tokenProvider = { token },
             api = FileApi(listOf(StorageRoot("primary", root.toFile(), "Internal"))),
+            requestStore = requests,
             info = {
                 PingInfo(
                     version = "0.1.0-test",
@@ -382,6 +385,161 @@ class HttpServerTest {
         assertFalse(messages.joinToString("\n").contains("wrong-secret-value"))
     }
 
+    @Test
+    fun `request endpoints require authentication and remain absent without a store`() {
+        val item = requests.create("bug", "", "diagnostic log")
+        listOf("/v1/requests", "/v1/requests/${item.id}", "/v1/requests/${item.id}/log").forEach { target ->
+            assertEquals(401, request(if (target.endsWith(item.id)) "POST" else "GET", target,
+                authenticate = false, body = "{}").status)
+        }
+        val disabled = HttpServer(0, loopback, { token },
+            FileApi(listOf(StorageRoot("primary", root.toFile(), "Internal"))),
+            { PingInfo("test", "device", 35, true, emptyList(), "UTC") })
+        disabled.start()
+        try {
+            listOf("GET /v1/requests", "POST /v1/requests/${item.id}", "GET /v1/requests/${item.id}/log").forEach { route ->
+                Socket(loopback, disabled.boundPort).use { socket ->
+                    socket.soTimeout = 2000
+                    socket.getOutputStream().write(("$route HTTP/1.1\r\n" +
+                        "Authorization: Bearer $token\r\n\r\n").toByteArray())
+                    assertEquals(404, parseResponse(socket.getInputStream().readBytes()).status, route)
+                }
+            }
+        } finally { disabled.stop() }
+    }
+
+    @Test
+    fun `request list status transitions and attached log follow the contract`() {
+        val item = requests.create("bug", "Fix the crash", "diagnostic 日志")
+        val listing = request("GET", "/v1/requests")
+        assertEquals(200, listing.status)
+        val list = Json.parse(listing.text) as Map<*, *>
+        assertEquals(item.id, ((list["requests"] as List<*>).first() as Map<*, *>)["id"])
+        assertTrue((list["now_ms"] as Number).toLong() > 0)
+        assertTrue(requests.lastPolledMs > 0)
+        val log = request("GET", "/v1/requests/${item.id}/log")
+        assertEquals(200, log.status)
+        assertEquals("text/plain; charset=utf-8", log.headers["content-type"])
+        assertEquals("diagnostic 日志", log.text)
+        fun update(status: String) = request("POST", "/v1/requests/${item.id}",
+            body = Json.stringify(mapOf("status" to status, "message" to "Result")))
+        assertEquals(409, update("done").status)
+        assertEquals(200, update("working").status)
+        assertEquals(409, update("working").status)
+        assertEquals(200, update("new").status)
+        assertEquals(200, update("working").status)
+        assertEquals(200, update("done").status)
+        assertEquals(409, update("failed").status)
+        val final = Json.parse(update("new").text) as Map<*, *>
+        assertEquals("conflict", final["error"])
+        assertEquals(404, request("POST", "/v1/requests/unknown", body =
+            "{\"status\":\"working\",\"message\":\"\"}").status)
+        assertEquals(404, request("GET", "/v1/requests/unknown/log").status)
+        val noLog = requests.create("feature", "A change")
+        assertEquals(404, request("GET", "/v1/requests/${noLog.id}/log").status)
+    }
+
+    @Test
+    fun `request updates reject malformed bodies invalid status and oversized message`() {
+        val item = requests.create("feature", "A change")
+        listOf("{", "[]", "null", "{}", "{\"status\":42,\"message\":\"\"}",
+            "{\"status\":\"other\",\"message\":\"\"}", "{\"status\":\"working\",\"message\":null}",
+            Json.stringify(mapOf("status" to "working", "message" to "x".repeat(1001))),
+            "[".repeat(500) + "]".repeat(500)).forEach { body ->
+            assertEquals(400, request("POST", "/v1/requests/${item.id}", body = body).status, body.take(100))
+        }
+        assertEquals(413, request("POST", "/v1/requests/${item.id}", body = "x".repeat(16385)).status)
+        assertEquals(411, request("POST", "/v1/requests/${item.id}").status)
+        assertEquals(400, request("POST", "/v1/requests/${item.id}", headers = mapOf("Transfer-Encoding" to "chunked")).status)
+        assertEquals(400, request("POST", "/v1/requests/${item.id}", headers = mapOf("Content-Length" to "-1")).status)
+        assertEquals(400, request("POST", "/v1/requests/${item.id}", headers = mapOf("Content-Type" to "text/plain"), body = "{}").status)
+        listOf("/v1/ping", "/v1/ls", "/v1/requests", "/v1/requests/${item.id}/log", "/unknown").forEach {
+            assertEquals(405, request("POST", it, body = "{}").status, it)
+        }
+        listOf("-1", "61", "oops").forEach {
+            assertEquals(400, request("GET", "/v1/requests?wait=$it").status)
+        }
+        assertTrue(requests.list().all { it.status == "new" })
+    }
+
+    @Test
+    fun `request body framing rejects invalid UTF-8 truncated bytes and duplicate lengths`() {
+        val item = requests.create("feature", "A change")
+        fun exchange(extraHeaders: String, body: ByteArray): HttpResponse {
+            Socket(loopback, server.boundPort).use { socket ->
+                socket.soTimeout = 2000
+                socket.getOutputStream().apply {
+                    write(("POST /v1/requests/${item.id} HTTP/1.1\r\n" +
+                        "Authorization: Bearer $token\r\nContent-Type: application/json\r\n" +
+                        extraHeaders + "\r\n").toByteArray())
+                    write(body)
+                    flush()
+                }
+                socket.shutdownOutput()
+                return parseResponse(socket.getInputStream().readBytes())
+            }
+        }
+        assertEquals(400, exchange("Content-Length: 1\r\n", byteArrayOf(0xff.toByte())).status)
+        assertEquals(400, exchange("Content-Length: 100\r\n", "{}".toByteArray()).status)
+        assertEquals(400, exchange("Content-Length: 2\r\nContent-Length: 2\r\n", "{}".toByteArray()).status)
+        assertEquals(413, exchange("Content-Length: 99999999999999999999999999\r\n", byteArrayOf()).status)
+        val valid = "{\"status\":\"working\",\"message\":\"\"}".padEnd(16 * 1024)
+        assertEquals(200, exchange("Content-Length: 16384\r\n", valid.toByteArray()).status)
+    }
+
+    @Test
+    fun `long poll wakes on create and returns at timeout`() {
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val polled = java.util.concurrent.CountDownLatch(1)
+            requests.observe { if (requests.lastPolledMs > 0) polled.countDown() }.use {
+                val pending = pool.submit<HttpResponse> { request("GET", "/v1/requests?wait=3") }
+                assertTrue(polled.await(1, java.util.concurrent.TimeUnit.SECONDS))
+                assertFalse(pending.isDone)
+                val item = requests.create("feature", "Wake up")
+                assertTrue(pending.get(1, java.util.concurrent.TimeUnit.SECONDS).text.contains(item.id))
+                requests.update(item.id, "failed", "test finished")
+            }
+            val start = System.nanoTime()
+            assertEquals(200, request("GET", "/v1/requests?wait=1").status)
+            val elapsed = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
+            assertTrue(elapsed in 800..2500, "elapsed=$elapsed")
+        } finally { pool.shutdownNow() }
+    }
+
+    @Test
+    fun `many long polls leave workers available for file listing and updates`() {
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(12)
+        try {
+            val polls = (1..12).map { pool.submit<HttpResponse> { request("GET", "/v1/requests?wait=4") } }
+            // Extra long polls must return immediately while two calls retain their wait slots.
+            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2)
+            while (polls.count { it.isDone } < 10 && System.nanoTime() < deadline) Thread.sleep(10)
+            assertTrue(polls.count { it.isDone } >= 10)
+            val listing = pool.submit<HttpResponse> { request("GET", "/v1/ls") }
+            assertEquals(200, listing.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
+            requests.create("feature", "Release all waiters")
+            polls.forEach { assertEquals(200, it.get(1, java.util.concurrent.TimeUnit.SECONDS).status) }
+        } finally { pool.shutdownNow() }
+    }
+
+    @Test
+    fun `access logger receives status body bytes duration and path without query or headers`() {
+        val records = java.util.concurrent.LinkedBlockingQueue<List<Any>>()
+        server.accessLogger = { method, path, status, bytes, duration ->
+            records.add(listOf(method, path, status, bytes, duration))
+        }
+        val response = request("GET", "/v1/ls?path=missing-secret&token=query-secret")
+        val record = records.poll(1, java.util.concurrent.TimeUnit.SECONDS)
+        assertEquals(listOf("GET", "/v1/ls", 404, response.body.size.toLong()), record.take(4))
+        assertTrue(record[4] as Long >= 0)
+        assertFalse(record.toString().contains("secret"))
+        request("GET", "/v1/requests", authenticate = false)
+        assertEquals(401, records.poll(1, java.util.concurrent.TimeUnit.SECONDS)[2])
+        server.accessLogger = { _, _, _, _, _ -> throw IllegalStateException("Logging failed") }
+        assertEquals(200, request("GET", "/v1/ls").status)
+    }
+
     private fun assertRange(range: String, start: Int, end: Int, expected: String) {
         val response = request(
             "GET",
@@ -412,6 +570,9 @@ class HttpServerTest {
                 if (authenticate) append("Authorization: Bearer ").append(bearer ?: token).append("\r\n")
                 headers.forEach { (name, value) -> append(name).append(": ").append(value).append("\r\n") }
                 if (bodyBytes.isNotEmpty()) append("Content-Length: ").append(bodyBytes.size).append("\r\n")
+                if (method == "POST" && headers.keys.none { it.equals("Content-Type", true) }) {
+                    append("Content-Type: application/json\r\n")
+                }
                 append("\r\n")
             }.toByteArray(StandardCharsets.ISO_8859_1)
             socket.getOutputStream().apply {

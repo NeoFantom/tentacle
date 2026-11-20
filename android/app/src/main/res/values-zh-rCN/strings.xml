@@ -5,6 +5,9 @@
     <string name="save">保存</string>
     <string name="copy">复制</string>
     <string name="copied">已复制</string>
+    <string name="view">查看</string>
+    <string name="clear">清除</string>
+    <string name="close">关闭</string>
     <string name="settings_unavailable">这台手机打不开该设置页。请到系统“设置 → 应用 → Tentacle”里操作。</string>
 
     <!-- Status card -->
@@ -59,6 +62,34 @@
     <string name="tailscale">Tailscale</string>
     <string name="other">其他网络</string>
     <string name="public_connection">自有服务器</string>
+
+    <!-- Requests from the app -->
+    <string name="requests_title">让电脑修改 Tentacle</string>
+    <string name="requests_scope">只能修改这个 Tentacle 应用和电脑工具；其他需求会被拒绝。</string>
+    <string name="requests_hint">描述你想要的修改，或哪里出了问题…</string>
+    <string name="requests_counter">%1$d / %2$d</string>
+    <string name="requests_send">发送</string>
+    <string name="requests_bug">上传日志并修复</string>
+    <string name="requests_sent">已发送给电脑</string>
+    <string name="requests_invalid">请缩短到 1000 个汉字或单词以内，并删除控制字符。</string>
+    <string name="requests_save_failed">无法保存需求，请重试。</string>
+    <string name="requests_checked">电脑在 %1$s前检查过</string>
+    <string name="requests_last_checked">电脑上次检查是在 %1$s前</string>
+    <string name="requests_never_checked">还没有电脑检查过——请在电脑上运行 `tentacle requests watch`（参见 README）</string>
+    <string name="requests_server_note">只有文件服务运行时，电脑才能看到这些需求。</string>
+    <string name="requests_empty">你提交的需求会显示在这里。</string>
+    <string name="requests_more">更多</string>
+    <string name="requests_kind_change">功能修改</string>
+    <string name="requests_kind_bug">问题修复</string>
+    <string name="requests_status_waiting">等待电脑处理</string>
+    <string name="requests_status_working">电脑正在处理</string>
+    <string name="requests_status_done">已完成</string>
+    <string name="requests_status_failed">失败</string>
+    <string name="requests_time_ago">%1$s前</string>
+    <string name="requests_age_seconds">%1$d 秒</string>
+    <string name="requests_age_minutes">%1$d 分钟</string>
+    <string name="requests_age_hours">%1$d 小时</string>
+    <string name="requests_age_days">%1$d 天</string>
 
     <!-- Ways to connect -->
     <string name="ways_title">连接方式</string>
@@ -151,6 +182,12 @@
     <string name="update_source">更新来源</string>
     <string name="update_source_hint">留空 = 不检查更新</string>
     <string name="save_update_source">保存更新来源</string>
+    <string name="app_log">应用日志</string>
+    <string name="app_log_empty">应用日志为空。</string>
+    <string name="app_log_clear_title">要清除应用日志吗？</string>
+    <string name="app_log_clear_message">这会删除 Tentacle 保存的诊断记录。</string>
+    <string name="app_log_cleared">应用日志已清除</string>
+    <string name="app_log_failed">无法读取或修改应用日志，请重试。</string>
 
     <!-- Updates -->
     <string name="version">Tentacle %1$s</string>
