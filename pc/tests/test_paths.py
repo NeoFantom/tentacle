@@ -277,6 +277,23 @@ class RaceTests(unittest.TestCase):
         self.assertGreaterEqual(elapsed, 0.3)
         self.assertEqual([r.status for r in selection.results], ["unreachable", "ok"])
 
+    def test_wait_all_does_not_poll_an_expired_grace_deadline(self):
+        self.plan = {self.LAN: (0.0, "ok"), self.DEAD: (0.3, "unreachable")}
+        race = paths._Race(self.prober, lambda: None, set(), wait_all=True)
+        original_get = race._events.get
+        polls = 0
+
+        def counted_get(*args, **kwargs):
+            nonlocal polls
+            polls += 1
+            return original_get(*args, **kwargs)
+
+        race._events.get = counted_get
+        chosen, results, _reports = race.run([self.DEAD, self.LAN])
+        self.assertEqual(chosen.url, self.LAN)
+        self.assertEqual([result.status for result in results], ["unreachable", "ok"])
+        self.assertLess(polls, 10)
+
     def test_unfinished_probes_run_on_daemon_threads(self):
         self.plan = {self.LAN: (0.0, "ok"), self.DEAD: (1.0, "unreachable")}
         self.select([self.DEAD, self.LAN])

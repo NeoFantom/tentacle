@@ -385,13 +385,19 @@ class _Race:
             now = time.monotonic()
             if done or now >= self._deadline:
                 break
-            waits = [self._deadline - now]
-            if grace_until is not None:
-                waits.append(grace_until - now)
+            if self._status_state == "waiting" and now >= self._status_deadline:
+                self._status_state = "done"
+                for result in self._results.values():
+                    self._classify(result)
+                continue
+            deadlines = [self._deadline]
+            if not self._wait_all and grace_until is not None:
+                deadlines.append(grace_until)
             if self._status_state == "waiting":
-                waits.append(self._status_deadline - now)
+                deadlines.append(self._status_deadline)
+            waits = [deadline - now for deadline in deadlines if deadline > now]
             try:
-                kind, value = self._events.get(timeout=max(0.0, min(waits)))
+                kind, value = self._events.get(timeout=min(waits))
             except queue.Empty:
                 if self._status_state == "waiting" and time.monotonic() >= self._status_deadline:
                     self._status_state = "done"

@@ -23,6 +23,60 @@ class ServerInfoParserTest {
     }
 
     @Test
+    fun `ssh commands preserve shell quoted and escaped option arguments`() {
+        for (identity in listOf("\"my key\"", "'my key'", "my\\ key", "\"my \\\"key\\\"\"", "\"my \\key\"")) {
+            assertEquals(ServerInfo("example.com", user = "user"),
+                parse("ssh -i $identity user@example.com"), identity)
+        }
+        for (option in listOf("\"User tentacle\"", "'User tentacle'", "User=tentacle")) {
+            assertEquals(ServerInfo("example.com", user = "tentacle"),
+                parse("ssh -o $option user@example.com"), option)
+        }
+        for (option in listOf("\"Port 2222\"", "'Port 2222'", "Port=2222")) {
+            assertEquals(ServerInfo("example.com", 2222, "user"),
+                parse("ssh -o $option user@example.com"), option)
+        }
+        assertEquals(ServerInfo("example.com", user = "tentacle"),
+            parse("ssh -l tentacle user@example.com"))
+    }
+
+    @Test
+    fun `ssh url destinations retain command options and their precedence`() {
+        for (destination in listOf("ssh://user@example.com:2222", "ssh://user@example.com:2222/")) {
+            assertEquals(ServerInfo("example.com", 2222, "user", 9876),
+                parse("ssh -R 127.0.0.1:9876:127.0.0.1:8765 $destination"))
+            assertEquals(ServerInfo("example.com", 2200, "tentacle", 9876),
+                parse("ssh -R 127.0.0.1:9876:127.0.0.1:8765 -p 2200 -o \"User tentacle\" $destination"))
+        }
+        assertEquals(ServerInfo("example.com", remotePort = 9876),
+            parse("ssh -R 9876:127.0.0.1:8765 ssh://example.com"))
+        assertEquals(ServerInfo("2001:db8::1", 2222, "user", 9876),
+            parse("ssh -R 9876:127.0.0.1:8765 ssh://user@[2001:db8::1]:2222/"))
+        assertEquals(ServerInfo("example.com", 2222, "user"), parse("ssh://user@example.com:2222/"))
+    }
+
+    @Test
+    fun `public urls retain unicode paths and stop at prose delimiters`() {
+        val expected = "https://example.com/%E6%89%8B%E6%9C%BA"
+        assertEquals(expected, parse("https://example.com/手机").publicUrl)
+        assertEquals(expected, parse("https://example.com/手机 后续文字").publicUrl)
+        assertEquals(expected, parse("访问地址：https://example.com/手机，端口：22").publicUrl)
+        assertEquals("https://example.com/t", parse("访问地址：https://example.com/t，端口：22").publicUrl)
+        assertEquals("https://example.com:8443/t", parse("（https://example.com:8443/t），").publicUrl)
+        assertEquals("https://example.com/t", parse("https://example.com/t 后续文字").publicUrl)
+    }
+
+    @Test
+    fun `public urls preserve balanced brackets and trim unmatched closing punctuation`() {
+        val root = "https://[2001:db8::1]"
+        for (text in listOf(root, "($root)", "[$root]", "（$root），", "$root]).")) {
+            assertEquals(ServerInfo("2001:db8::1", publicUrl = root, hostFromUrl = true), parse(text), text)
+        }
+        assertEquals("https://example.com/a(b)", parse("(https://example.com/a(b)).").publicUrl)
+        assertEquals("$root/t", parse("[$root/t].").publicUrl)
+    }
+
+    @Test
     fun `ssh urls and user at host forms`() {
         assertEquals(ServerInfo("example.com", 2222, "user"), parse("ssh://user@example.com:2222"))
         assertEquals(ServerInfo("example.com", 2222, "user"), parse("user@example.com:2222"))
@@ -100,6 +154,12 @@ class ServerInfoParserTest {
             Fingerprint SHA256:abc/def+ghi
         """.trimIndent()
         assertEquals(ServerInfo("192.0.2.50", 2222, "tentacle", 9876, "https://example.com/tentacle"), parse(text))
+    }
+
+    @Test
+    fun `an apostrophe after the command does not drop its options`() {
+        assertEquals(ServerInfo("192.0.2.10", 2222, "tentacle"), parse("ssh -p 2222 tentacle@192.0.2.10 that's the server"))
+        assertEquals(ServerInfo("192.0.2.10", 2222, "tentacle"), parse("ssh -p 2222 tentacle@192.0.2.10 \"unterminated"))
     }
 
     @Test

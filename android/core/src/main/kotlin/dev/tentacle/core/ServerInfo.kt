@@ -72,7 +72,7 @@ object ServerInfoParser {
 
     private val permitListen = Regex("(?i)permitlisten *= *\"?([^\"\\s,]*)\"?")
     private val sshUrl = Regex("(?i)(?<![A-Za-z0-9+.-])ssh://(?:([^@\\s/:]+)@)?(\\[[0-9a-f:.]+]|[^\\s/:@\"']+)(?::(\\d{1,5}))?[^\\s\"']*")
-    private val httpUrl = Regex("(?i)(?<![A-Za-z0-9+.-])https?://[^\\s\"'<>,;\\u3000-\\u9fff\\uff00-\\uffef]+")
+    private val httpUrl = Regex("(?i)(?<![A-Za-z0-9+.-])https?://[^\\s\"'<>,;\\u3000-\\u303f\\uff00-\\uffef]+")
     private val sshCommand = Regex("(?i)(?<![A-Za-z0-9_./-])ssh(?= )")
     private val userAt = Regex("(?i)(?<![A-Za-z0-9_.@-])([a-z_][a-z0-9_.-]{0,31})@(\\[[0-9a-f:.]+]|[0-9a-f]*:[0-9a-f:.]*|[a-z0-9.-]+)(?::(\\d{1,5}))?(?![A-Za-z0-9_-])")
     private val bracketed = Regex("(?i)\\[([0-9a-f:.]+)](?::(\\d{1,5}))?")
@@ -120,9 +120,9 @@ object ServerInfoParser {
 
         fun run(): ServerInfo {
             permitListens()
-            sshUrls()
             httpUrls()
             sshCommands()
+            sshUrls()
             labelled()
             generic()
             var fromUrl = false
@@ -160,7 +160,7 @@ object ServerInfoParser {
 
         private fun httpUrls() {
             for (match in matches(httpUrl)) {
-                val raw = match.value.trimEnd('.', ',', ';', ':', ')', ']', '}', '>', '!', '?', '\'', '"')
+                val raw = trimUrlPunctuation(match.value)
                 publicUrl(raw)?.let { (value, name) ->
                     if (url.value == null) urlHost = name
                     url.offer(value, LABEL)
@@ -169,12 +169,12 @@ object ServerInfoParser {
             }
         }
 
-        /** `ssh [options] [user@]host [options]`, as OpenSSH accepts options after the destination. */
+        /** `ssh [options] destination [options]`, including SSH URL destinations. */
         private fun sshCommands() {
             for (match in matches(sshCommand)) {
                 val lineEnd = rest.indexOf("\n", match.range.last).let { if (it < 0) rest.length else it }
                 val line = rest.substring(match.range.last + 1, lineEnd)
-                val tokens = line.split(' ').filter { it.isNotEmpty() }.map { it.trim('"', '\'') }
+                val tokens = shellTokens(line)
                 if (tokens.isEmpty()) continue
                 val first = tokens.first().lowercase().trimEnd(':', '=')
                 if (first in labelWords || first.startsWith(":") || first.startsWith("=")) continue
@@ -305,9 +305,10 @@ object ServerInfoParser {
 
     private data class Target(val host: String, val user: String?, val port: Int?)
 
-    /** `[user@]host[:port]`, `[user@][v6][:port]` or a bare IPv6 literal. */
+    /** `[user@]host[:port]`, `[user@][v6][:port]`, a bare IPv6 literal or an SSH URL. */
     private fun targetOf(raw: String): Target? {
-        val value = raw.trim().trim('"', '\'').trimEnd('.', ',', ';', ')')
+        val trimmed = raw.trim().trim('"', '\'').trimEnd('.', ',', ';', ')')
+        val value = if (trimmed.startsWith("ssh://", ignoreCase = true)) trimmed.substring(6).removeSuffix("/") else trimmed
         if (value.isEmpty()) return null
         val at = value.lastIndexOf('@')
         val user = if (at > 0) userOf(value.substring(0, at)) ?: return null else null
@@ -360,6 +361,56 @@ object ServerInfoParser {
         val separator = argument.indexOfFirst { it == '=' || it == ' ' }
         return if (separator > 0) argument.substring(0, separator).lowercase() to argument.substring(separator + 1).trim()
         else argument.lowercase() to next.orEmpty()
+    }
+
+    /** Shell quoting and escapes only; pasted commands are never evaluated. */
+    private fun shellTokens(line: String): List<String> {
+        val tokens = mutableListOf<String>()
+        val token = StringBuilder()
+        var quote: Char? = null
+        var started = false
+        var index = 0
+        while (index < line.length) {
+            val c = line[index]
+            when {
+                c == '\\' && quote != '\'' -> {
+                    val next = line.getOrNull(index + 1)
+                    if (next != null && (quote == null || next in "\"\\$`")) {
+                        token.append(next)
+                        index++
+                    } else token.append(c)
+                    started = true
+                }
+                quote != null -> if (c == quote) quote = null else token.append(c)
+                c == '\'' || c == '"' -> { quote = c; started = true }
+                c.isWhitespace() -> if (started) {
+                    tokens.add(token.toString())
+                    token.setLength(0)
+                    started = false
+                }
+                else -> { token.append(c); started = true }
+            }
+            index++
+        }
+        // An unbalanced quote (an apostrophe in prose after the command) ends the last token.
+        if (started) tokens.add(token.toString())
+        return tokens
+    }
+
+    private fun trimUrlPunctuation(value: String): String {
+        var end = value.length
+        var brackets = value.count { it == '[' } - value.count { it == ']' }
+        var parentheses = value.count { it == '(' } - value.count { it == ')' }
+        while (end > 0) {
+            when (value[end - 1]) {
+                ']' -> if (brackets < 0) brackets++ else break
+                ')' -> if (parentheses < 0) parentheses++ else break
+                '.', ',', ';', ':', '}', '>', '!', '?', '\'', '"' -> Unit
+                else -> break
+            }
+            end--
+        }
+        return value.substring(0, end)
     }
 
     /** An http(s) URL without credentials, query or fragment, and its host name. */

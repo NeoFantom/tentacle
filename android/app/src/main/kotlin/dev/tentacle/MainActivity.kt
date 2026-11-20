@@ -120,6 +120,7 @@ class MainActivity : Activity() {
     private var installRequested = false
     private var tokenVisible = false
     private var updating = false
+    private var lastTunnelError: TunnelStatus.Error? = null
     @Volatile private var cloudflareCheck = 0
 
     override fun attachBaseContext(base: Context) = super.attachBaseContext(AppLanguage.wrap(base))
@@ -703,9 +704,11 @@ class MainActivity : Activity() {
         hostFingerprint.text = getString(R.string.host_fingerprint,
             (tunnel.hostKeyFingerprint ?: settings.trustedHostFingerprint).ifEmpty { getString(R.string.not_trusted) })
         trustNewKey.visibility = if (tunnel.error == TunnelStatus.Error.HOST_KEY_CHANGED) View.VISIBLE else View.GONE
-        if (tunnel.error == TunnelStatus.Error.HOST_KEY_CHANGED || tunnel.error == TunnelStatus.Error.KEY_REJECTED) {
+        if (tunnel.error != lastTunnelError &&
+            (tunnel.error == TunnelStatus.Error.HOST_KEY_CHANGED || tunnel.error == TunnelStatus.Error.KEY_REJECTED)) {
             serverKeys.open = true
         }
+        lastTunnelError = tunnel.error
         updating = true
         tunnelSwitch.isChecked = enabled
         updating = false
