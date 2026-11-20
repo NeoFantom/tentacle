@@ -482,11 +482,12 @@ class Watcher:
                     if once:
                         return 0
                 except PhoneError as exc:
-                    if exc.code not in ('unreachable', 'timeout'):
+                    if exc.code not in ('unreachable', 'timeout', 'not_found'):
                         self.report(f'Phone request failed ({exc.code}).')
                         return 1
                     if not offline:
-                        self.report('Phone is unreachable; waiting to reconnect.')
+                        self.report('The phone app is too old for requests (update it in the app); waiting.'
+                                    if exc.code == 'not_found' else 'Phone is unreachable; waiting to reconnect.')
                     offline = True
                     if once:
                         return 1

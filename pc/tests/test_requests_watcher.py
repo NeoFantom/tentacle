@@ -548,5 +548,22 @@ class RequestWatcherTests(unittest.TestCase):
         self.assertEqual(reports, ["Phone is unreachable; waiting to reconnect.", "Phone is reachable again."])
 
 
+    def test_old_phone_app_without_requests_is_waited_for(self) -> None:
+        class Client:
+            calls = 0
+
+            def requests(inner, wait=0):
+                inner.calls += 1
+                if inner.calls == 1:
+                    raise PhoneError("not_found", "no such endpoint")
+                raise KeyboardInterrupt
+
+        sleeps: list[int] = []
+        reports: list[str] = []
+        with self.assertRaises(KeyboardInterrupt):
+            Watcher(self.cfg, Client(), sleep=sleeps.append, report=reports.append).watch()
+        self.assertEqual(sleeps, [5])
+        self.assertIn("too old", reports[0])
+
 if __name__ == "__main__":
     unittest.main()
