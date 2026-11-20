@@ -6,8 +6,10 @@ Change an affected contract here before changing an implementation.
 ## 1. Scope
 
 Tentacle is a manual toolkit for a human or local agent to browse Android shared
-storage, pull call recordings, and transcribe audio locally on demand. The phone
-serves an HTTP API with read-only file access and request status updates.
+storage, pull call recordings, transcribe audio locally on demand, and receive
+short-lived verification codes when the phone owner enables that feature. The
+phone serves an HTTP API with read-only file access, request status updates and
+an in-memory verification-code feed.
 File commands do their work and exit; there is no background file analysis,
 project filing or file-processing task queue. The optional `requests watch`
 process stays running to handle changes requested in the app, as specified
@@ -21,16 +23,16 @@ Tailscale node, are documented in [CONNECT.md](CONNECT.md).
 
 | Component | Responsibility |
 |---|---|
-| `android/:core`, `dev.tentacle.core` | Storage roots, confined file access, HTTP API and token authentication; pure Kotlin/JVM. |
-| `android/:app`, `dev.tentacle` | Foreground service, permission guidance, settings, pairing and live service status. |
+| `android/:core`, `dev.tentacle.core` | Storage roots, confined file access, verification-code parsing and in-memory storage, HTTP API and token authentication; pure Kotlin/JVM. |
+| `android/:app`, `dev.tentacle` | Foreground service, notification/SMS code capture, permission guidance, settings, pairing and live service status. |
 | `android/tsbridge` (Go, `tsbridge`) | Embedded userspace Tailscale node (`tailscale.com/tsnet`) bound with gomobile into an AAR for `:app` (`dev.tentacle.tailnet`). |
 | `pc/src/tentacle/config.py` | All PC settings, loading and masked display. |
-| `phone.py`, `phone_cli.py` | HTTP client, resumable transfers, file commands, discovery and diagnostics. |
+| `phone.py`, `phone_cli.py`, `codes_cmd.py` | HTTP client, resumable transfers, file commands, verification-code waiting, discovery and diagnostics. |
 | `paths.py` | Choosing among the phone's candidate base URLs (probe, tailnet-direct check, short cache). |
 | `calls.py` | Recording metadata, manual listing/pulling and content-addressed transcription cache. |
 | `asr/` | Local ASR backends, transcript validation and rendering. |
 | `timeutil.py` | Shared time parsing and conversion. |
-| `skills/tentacle/SKILL.md` | Agent workflow for phone files and calls. |
+| `skills/tentacle/SKILL.md` | Agent workflow for phone files, calls and verification codes. |
 
 The PC core uses Python ≥ 3.11 standard library only. Optional ASR libraries are
 lazy imports declared as package extras. Android uses Kotlin;
@@ -90,6 +92,7 @@ file access remains read-only.
 | `GET /v1/stat` | `path` | `Entry` |
 | `GET /v1/find` | `root` (path, default primary), `ext` (comma list, case-insensitive, no dot), `name` (case-insensitive substring), `since_ms`, `until_ms`, `type=file\|dir\|any` (default file), `max_depth` (default 12), `limit` (default 500, max 5000), `sort=mtime_desc\|mtime_asc\|name` (default mtime_desc) | `{"root":..., "entries":[Entry...], "truncated": bool}`. Walk skips `Android/data`, `Android/obb`, hidden dirs unless `hidden=1`; never follows symlinks out of roots. |
 | `GET/HEAD /v1/file` | `path` | Raw bytes, `Content-Type` by extension (fallback `application/octet-stream`), `Content-Length`, `Last-Modified`, `ETag: "<size>-<mtime_ms>"`, `Accept-Ranges: bytes`. Supports single `Range: bytes=a-b` / `a-` / `-n` → 206 with `Content-Range`. |
+| `GET /v1/codes` | `since` = phone epoch milliseconds; `wait=0..60` seconds | `{"codes":[{"id","code","sender","source":"notification"\|"sms","snippet","received_ms"}...],"now_ms":...,"enabled":true}`. Codes are oldest first and only entries with `received_ms > since` are returned. With `wait > 0`, the call blocks until such an entry exists or the timeout elapses. When relay is off, it returns `{"codes":[],"now_ms":...,"enabled":false}` immediately. See [CODES.md](CODES.md). |
 | `GET /v1/requests` | `wait=0..60` seconds | Newest-first requests and `now_ms`; optional long-poll for a `new` request, recording the last poll time. See [REQUESTS.md](REQUESTS.md). |
 | `POST /v1/requests/<id>` | JSON status and message, ≤ 16 KiB | Updated Request; invalid input → 400, unknown id → 404, disallowed transition → 409. See [REQUESTS.md](REQUESTS.md). |
 | `GET /v1/requests/<id>/log` | — | Attached snapshot as `text/plain; charset=utf-8`, or 404. See [REQUESTS.md](REQUESTS.md). |
@@ -104,7 +107,12 @@ canonicalising ordinary children repeatedly. Returned paths stay confined to
 readable roots; denied Android directories and escaping symlinks remain blocked.
 
 `:core` also owns `ServerInfoParser`, which recognises own-server settings in
-pasted free text, and literal-IP / Cloudflare-range checks (`IpAddresses`).
+pasted free text, literal-IP / Cloudflare-range checks (`IpAddresses`), and the
+pure-JVM verification-code parser and store. The store is memory-only, keeps at
+most ten entries, expires each entry ten minutes after receipt, and deduplicates
+the same code and sender within two minutes. Disabling relay clears it. Code and
+request long-polls share the two HTTP-worker waiting slots so file requests
+retain capacity. See [CODES.md](CODES.md).
 
 `:app` owns `ServerService`, `MainActivity`, `BootReceiver`, pairing and settings.
 The main screen puts one status card (plain-language state, a single
@@ -124,6 +132,18 @@ writing; HTTP access logs omit query strings and headers. Snapshots include app
 and Android versions, device information, time zone and current time. Settings
 can view, copy or clear the log. The application crash handler writes synchronously
 before delegating to the previous handler. See [REQUESTS.md](REQUESTS.md).
+
+Verification-code relay is off by default. While enabled, a `RECEIVE_SMS`
+receiver is the primary source on every Android version and concatenates
+multipart messages. A separately enabled notification listener is an optional
+source, mainly for Android 14 and older or codes sent inside apps; Android 15
+and newer redact one-time codes in other apps' notifications from ordinary
+listeners. Empty and platform-redacted notifications are ignored. Disabling
+relay makes both sources inert and clears captured entries. Tentacle ignores
+its own, ongoing and group-summary notifications. Payment, purchase, transfer
+and withdrawal messages are never relayed. The app log records only sender and
+relayed/blocked status, while redaction masks any captured code accidentally
+passed to it.
 
 The foreground notification keeps the server visible. The activity refreshes the
 actual service state when resumed and observes starts/stops while visible.
@@ -221,6 +241,7 @@ tentacle recent [--since 1d] [--ext EXTENSIONS] [--json] [--local-time]
 tentacle get PATH [DEST]
 tentacle cat PATH [--max-bytes N]
 tentacle discover [--since 90d] [--json]
+tentacle code [--wait 120] [--from TEXT] [--since now|30s|2m] [--json]
 tentacle doctor [--json]
 ```
 
@@ -234,6 +255,14 @@ Relative dates accept `m/h/d/w`; absolute dates accept `YYYY-MM-DD` or
 `Recorder`, `Sounds`, `Download`, `Documents`, `Android/media/com.tencent.mm`,
 `Android/media/com.ss.android.lark`, `Call`, `CallRecordings`. Missing locations
 are skipped. Results are aggregated by parent directory with source suggestions.
+
+`code` first makes a non-waiting code request to learn the phone clock. By
+default it then accepts only codes received after that request; `--since 30s`
+or `--since 2m` includes a recent code when the website was triggered first.
+It long-polls in calls of at most 55 seconds until the overall `--wait` deadline
+and optionally matches `--from` case-insensitively against sender or snippet.
+Plain output contains only the code; `--json` returns its code object. A timeout
+exits 1. Disabled relay exits 2 and tells the owner where to enable it.
 
 `pair` stores every `url=` of a link in `phone.urls` (and the first one in
 `phone.url`; a single-address link clears `phone.urls`), then selects a path.
@@ -317,7 +346,10 @@ diagnostics); `2` means usage/configuration error, including missing pairing;
 
 ## 6. Privacy
 
-The phone API is token-protected. Files stay read-only; the only API write
+The phone API is token-protected. Anyone who has the phone token and can reach
+the server can read codes held for their ten-minute lifetime. Keep code relay
+off when it is not needed. Payment, purchase, transfer and withdrawal codes are
+never relayed, regardless of settings. Files stay read-only; the only API write
 updates an app request status and message (see [REQUESTS.md](REQUESTS.md)). Plain HTTP requires a trusted
 network or encrypted transport. Recordings and transcripts remain local; do not
 upload phone content elsewhere without asking. Models may download on first

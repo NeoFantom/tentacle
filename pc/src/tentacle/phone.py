@@ -297,6 +297,39 @@ class PhoneClient:
                 raise PhoneError("bad_response", "phone returned an invalid request object", None)
         return payload
 
+    def codes(self, since_ms: int | None = None, wait: int = 0) -> dict[str, Any]:
+        """List verification codes received after *since_ms*.
+
+        ``wait`` is bounded to the phone API's 60-second limit. Callers use a
+        smaller value when they need time to handle their own deadline.
+        """
+        wait_s = max(0, min(60, int(wait)))
+        payload = self._json(
+            "codes",
+            ({"wait": wait_s} if since_ms is None
+             else {"since": int(since_ms), "wait": wait_s}),
+            timeout=max(self.timeout, wait_s + 5),
+        )
+        codes = payload.get("codes")
+        if (not isinstance(codes, list) or type(payload.get("now_ms")) is not int
+                or type(payload.get("enabled")) is not bool):
+            raise PhoneError("bad_response", "phone returned an invalid codes response", None)
+        required = {
+            "id": str,
+            "code": str,
+            "sender": str,
+            "source": str,
+            "snippet": str,
+            "received_ms": int,
+        }
+        for code in codes:
+            if (not isinstance(code, dict) or any(
+                    type(code.get(name)) is not expected
+                    for name, expected in required.items()
+                ) or code["source"] not in {"notification", "sms"}):
+                raise PhoneError("bad_response", "phone returned an invalid code object", None)
+        return payload
+
     def update_request(self, request_id: str, status: str, message: str) -> dict[str, Any]:
         """Update one request's status and phone-visible message."""
         endpoint = "requests/" + urllib.parse.quote(request_id, safe="")

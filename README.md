@@ -1,10 +1,11 @@
 # Tentacle
 
 A manual toolkit that lets a local agent or human **browse Android phone files,
-pull call recordings, and transcribe them locally on demand**.
+pull call recordings, transcribe them locally on demand, and receive
+verification codes when the phone owner enables relay**.
 
 ```text
-Android shared storage ← read-only HTTP + token → tentacle CLI → local ASR
+Android phone ← token-protected HTTP → tentacle CLI → local tools and agents
 ```
 
 - Browse photos, downloads and documents with `ls`, `find`, `recent`, `stat`,
@@ -14,6 +15,8 @@ Android shared storage ← read-only HTTP + token → tentacle CLI → local ASR
 - `transcribe` accepts a phone path or local file, caches transcripts by audio
   SHA-256, and prints text or JSON. FunASR, faster-whisper and external command
   backends are available.
+- `code` waits for a short-lived verification code received directly by SMS,
+  with app notifications as an optional extra source.
 - The Python ≥ 3.11 core uses only the standard library. The Android app uses
   Kotlin with no third-party runtime dependencies.
 
@@ -95,13 +98,53 @@ tentacle discover
 tentacle calls [--since 7d] [--until DATE] [--source NAME] [--with TEXT] [--app APP]
 tentacle pull PHONE_PATH... [--to DIR]
 tentacle transcribe PHONE_PATH_OR_LOCAL_FILE [--json] [--force] [-o PREFIX]
+tentacle code [--wait 120] [--from TEXT] [--since now|30s|2m] [--json]
 tentacle doctor
 ```
 
 File listings and `calls` support `--json`. Human times use the phone's timezone;
 `ls`, `stat`, `find`, `recent` and `calls` accept `--local-time` for the PC zone.
 Exit codes: `0` success (including empty lists), `1` operation failure,
-`2` usage/configuration error, `130` interrupted.
+`2` usage/configuration error or disabled code relay, `130` interrupted.
+
+## Verification codes
+
+Tentacle can relay login and verification codes from the phone to a paired
+computer. The feature is off by default. Open the app’s **Settings** card, turn
+on **Relay verification codes to the computer**, accept the warning, and grant
+the SMS permission. The app shows **Waiting for codes** only after that
+permission is granted. Keep the file server running so the computer can connect.
+
+If SMS permission is denied or blocked, open **App info** and grant it there. A
+sideloaded build on Android 13 or newer may first require **App info → ⋮ → Allow
+restricted settings**. Xiaomi, Redmi and POCO phones may also require **App info
+→ Permissions → Notification SMS (通知类短信) → Allow**.
+
+**Also read codes from app notifications** is an optional extra source. Android
+15 and newer hide one-time codes in other apps' notifications from ordinary
+notification listeners, so this mainly helps on Android 14 and older or for
+codes sent inside apps. Sideloaded builds may also require **Allow restricted
+settings** before notification access can be granted.
+
+A typical agent-assisted login is:
+
+```bash
+# First trigger "Send code" on the website, then:
+tentacle code --from Aliyun --wait 120
+```
+
+The command prints only the matched code. By default it accepts codes received
+after the command starts, using the phone's clock to avoid clock skew. Use a
+small look-back such as `--since 30s` or `--since 2m` if the code might have
+arrived between clicking **Send code** and starting the command. `--from`
+matches either the sender or message snippet without case sensitivity.
+
+Codes are held in phone memory for at most ten minutes and are never written to
+disk. Messages about payments, purchases, transfers or withdrawals are never
+relayed; the owner must type those codes personally. Anyone who has the phone
+token and can reach its server can read retained codes, so protect the token and
+transport and leave relay off when it is not needed. The full contract is in
+[Verification-code relay](docs/CODES.md).
 
 ## Requests from the app
 
@@ -217,9 +260,10 @@ the PC races them and picks the fastest working one automatically
 
 ## Privacy and limitations
 
-The phone server is read-only and token-protected. Use a trusted network or an
-encrypted transport for HTTP. Audio and transcripts stay local; ask before
-uploading phone content elsewhere. Ensure recording consent where required.
+The phone server is token-protected. Its file endpoints are read-only; enabled
+code relay exposes in-memory codes for up to ten minutes. Use a trusted network
+or an encrypted transport for HTTP. Audio and transcripts stay local; ask
+before uploading phone content elsewhere. Ensure recording consent where required.
 Android restricts access to `Android/data` and `Android/obb`. Vendor battery
 management can pause the server; allow background operation and autostart when
 available.
@@ -238,6 +282,7 @@ Tentacle 是给本机 agent 或人使用的手动工具箱：浏览安卓手机�
 - `ls / find / recent / stat / get / cat` 用于照片、下载文件和文档。
 - `calls` 列出配置目录中的录音，按联系人、应用和日期筛选；`pull` 下载选中的文件。
 - `transcribe` 接受手机路径或本地文件，以音频 SHA-256 缓存转写，输出文本或 JSON。支持 FunASR、faster-whisper 和外部本地命令。
+- `code` 等待手机直接收到的短信验证码，也可选读取应用通知作为补充来源。
 - PC 核心只用 Python ≥ 3.11 标准库；安卓端使用 Kotlin，没有第三方运行时依赖。
 
 自动化实现保留在 `experimental/automation` 分支。
@@ -278,6 +323,12 @@ tentacle transcribe ./call.m4a --force -o ./transcript
 `calls` 按时间倒序列出手机现有录音，默认查询最近七天。`--since / --until` 在手机端过滤，`--limit` 对每个来源分别生效。`--with` 对联系人做不区分大小写的子串匹配，`--source` 选择来源，`--app` 精确匹配解析后的应用名。正在录制的文件也会列出，标记为 `recording: true`。
 
 `pull PHONE_PATH... --to DIR` 可指定下载目录，支持断点续传，同大小完整文件会跳过。`transcribe` 默认输出 `[mm:ss] SPEAKER: text` 文本；`--json` 输出 JSON，缓存命中时无需重新转写，`--force` 强制重做，`-o PREFIX` 导出 `.json` 和 `.txt`。
+
+### 验证码
+
+验证码转发默认关闭。在应用的 **Settings** 中开启 **Relay verification codes to the computer**，确认警告并授予短信权限；只有短信权限已授予时，状态才会显示 **Waiting for codes**。如果权限被拒绝或受限，请打开应用信息授予权限。安卓 13 及以上的侧载应用可能要先在 **应用信息 → ⋮ → 允许受限设置** 中放行；小米、Redmi 和 POCO 还可能需要在 **应用信息 → 权限 → 通知类短信 → 允许** 中单独授权。
+
+**Also read codes from app notifications** 是可选的补充来源。安卓 15 及以上会向普通通知监听器隐藏其他应用通知中的一次性验证码，因此它主要适用于安卓 14 及以下，或通过应用内消息发送的验证码。开启通知读取时，侧载应用也可能需要先允许受限设置。电脑端使用 `tentacle code --from '<品牌>' --wait 120` 等待验证码；如验证码可能已提前到达，可加 `--since 30s` 或 `--since 2m`。验证码只在手机内存保留十分钟，支付、购买、转账和提现消息永不转发。
 
 文件操作：`ls [PATH] [-a]` 列目录，`stat PATH` 看元数据，`find [ROOT] --ext jpg,pdf --name TEXT --since 7d --limit 50` 搜索，`recent --since 1d` 看最近文件，`get PATH [DEST]` 下载，`cat PATH --max-bytes N` 读取文本。列表和录音支持 `--json`；`ls / stat / find / recent / calls` 默认显示手机时区，`--local-time` 切换为电脑时区。退出码：`0` 成功（含空列表）、`1` 操作失败、`2` 用法或配置错误、`130` 中断。
 

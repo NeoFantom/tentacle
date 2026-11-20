@@ -1,7 +1,10 @@
 package dev.tentacle.core
 
 /** Removes credentials and login links before text reaches persistent logs. */
-class Redactor(private val currentSecrets: () -> Iterable<String> = { emptyList() }) {
+class Redactor(
+    private val currentCodes: () -> Iterable<String> = { emptyList() },
+    private val currentSecrets: () -> Iterable<String> = { emptyList() },
+) {
     fun redact(text: String): String {
         var result = PEM_PRIVATE_KEY.replace(text, REDACTED)
         result = AUTHORIZATION.replace(result) { "${it.groupValues[1]}$REDACTED" }
@@ -11,9 +14,11 @@ class Redactor(private val currentSecrets: () -> Iterable<String> = { emptyList(
         result = TAILSCALE_LOGIN.replace(result) { "${it.groupValues[1]}$REDACTED" }
         result = REGISTER_PATH.replace(result) { "${it.groupValues[1]}$REDACTED" }
         result = URL_QUERY.replace(result) { "${it.groupValues[1]}?$REDACTED" }
+        result = CODE_VALUE.replace(result) { "${it.groupValues[1]}$REDACTED" }
         result = TSKEY.replace(result, REDACTED)
         result = BASE64URL_TOKEN.replace(result, REDACTED)
         currentSecrets().filter { it.isNotEmpty() }.forEach { result = result.replace(it, REDACTED) }
+        currentCodes().filter { it.isNotEmpty() }.forEach { result = result.replace(it, REDACTED) }
         return result
     }
 
@@ -30,6 +35,10 @@ class Redactor(private val currentSecrets: () -> Iterable<String> = { emptyList(
         val TAILSCALE_LOGIN = Regex("(?i)(https?://login\\.tailscale\\.com/a/)[^/?#\\s]+")
         val REGISTER_PATH = Regex("(?i)(/register/)[^/?#\\s]+")
         val URL_QUERY = Regex("(?i)(https?://[^?\\s]+)\\?[^#\\s]*")
+        val CODE_VALUE = Regex(
+            "(?i)(\\b(?:verification[_ ]?code|otp|passcode|code)\\b[\"']?\\s*[:=]\\s*[\"']?)" +
+                "(?:(?=[A-Za-z0-9]{0,7}[0-9])[A-Za-z0-9]{4,8}|[0-9]{3} [0-9]{3})",
+        )
         val TSKEY = Regex("(?i)\\btskey-[A-Za-z0-9_-]+(?:-[A-Za-z0-9_-]+)*\\b")
         val BASE64URL_TOKEN = Regex("(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])")
     }

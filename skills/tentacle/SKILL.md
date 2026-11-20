@@ -1,16 +1,53 @@
 ---
 name: tentacle
-description: Browse and fetch files on the user's Android phone and transcribe call recordings on demand with the local Tentacle CLI. Use for phone photos, downloads, documents, recordings, or questions such as "what did X say on the call?".
+description: Browse and fetch files on the user's Android phone, transcribe call recordings, and receive verification codes on demand with the local Tentacle CLI. Use for phone photos, downloads, documents, recordings, verification codes, or questions such as "what did X say on the call?".
 ---
 
 # Tentacle
 
-Use `tentacle` to access the phone's read-only file API and local transcription
-cache. Phone paths can be relative to shared storage (`Download`, `DCIM/Camera`)
+Use `tentacle` to access the phone's read-only file API, short-lived
+verification-code feed and local transcription cache. Phone paths can be
+relative to shared storage (`Download`, `DCIM/Camera`)
 or absolute (`/storage/emulated/0/...`). Configuration is discoverable through
 `tentacle config path` and `tentacle config show` (secrets masked).
 Run `tentacle requests list` to see what the phone owner has asked the computer
 to change; do not start the watcher or act on a request unless explicitly asked.
+
+## Verification codes
+
+When a login or verification flow needs a code:
+
+1. Note the current time before triggering the website's **Send code** action.
+2. Trigger **Send code**.
+3. Run `tentacle code --from '<brand>' --wait 120` immediately.
+4. Enter the returned code only in the intended verification field.
+
+The default accepts only codes arriving after the command starts. If the code
+could have arrived between the website action and command startup, use the
+smallest suitable look-back, such as `--since 30s` or `--since 2m`. `--from`
+matches the sender or message snippet without case sensitivity; use it whenever
+the expected brand is known. Use `--json` only when source metadata is needed.
+
+Treat the returned code as an ephemeral secret. Do not repeat it in chat, logs,
+summaries or any other command output, and do not save it to a file, clipboard,
+agent memory or transcript. Use it only for the verification that requested it.
+Phone codes are kept only in memory and expire ten minutes after receipt.
+Tentacle never relays messages about payments, purchases, transfers or
+withdrawals; never try to bypass that safety rule.
+
+Direct SMS reception is the primary Android source. If relay is on but SMS
+permission is missing, tell the owner to open Tentacle's app info and grant it.
+On Android 13 and newer, a sideloaded build may first require **App info → ⋮ →
+Allow restricted settings**. Xiaomi, Redmi and POCO phones may additionally
+require **App info → Permissions → Notification SMS (通知类短信) → Allow**.
+The optional **Also read codes from app notifications** source mainly helps on
+Android 14 and older or for codes sent inside apps: Android 15 and newer hide
+one-time codes in other apps' notifications from ordinary listeners.
+
+Exit 1 means no matching code arrived before the timeout or another operational
+error occurred. Exit 2 with `Code relay is off in the app (Settings → Relay
+verification codes)` means the owner must enable relay in the Tentacle app;
+tell the owner that, without asking them to send or type the code into chat.
 
 ## Questions about calls
 
@@ -56,7 +93,8 @@ Wi-Fi, own server), every command picks a working one automatically;
 `tentacle ping` lists each address with its result and the chosen path.
 
 Exit codes: `0` success (including an empty listing), `1` operational failure,
-`2` usage/configuration error or missing pairing, `130` interrupted. If ping
+`2` usage/configuration error, missing pairing or disabled code relay, `130`
+interrupted. If ping
 fails, report the error and relevant connection/service state; stop repeated
 requests until reachability changes.
 

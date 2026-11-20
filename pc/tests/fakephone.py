@@ -50,6 +50,10 @@ class _Server(ThreadingHTTPServer):
         request_updates: list[tuple[str, str, str]],
         request_condition: threading.Condition,
         claim_conflicts: set[str],
+        codes: list[dict[str, object]],
+        codes_enabled: bool,
+        code_condition: threading.Condition,
+        code_queries: list[tuple[int | None, int]],
     ):
         self.root = root.resolve(strict=True)
         self.token = token
@@ -61,6 +65,10 @@ class _Server(ThreadingHTTPServer):
         self.request_updates = request_updates
         self.request_condition = request_condition
         self.claim_conflicts = claim_conflicts
+        self.codes = codes
+        self.codes_enabled = codes_enabled
+        self.code_condition = code_condition
+        self.code_queries = code_queries
         super().__init__(address, _Handler)
 
 
@@ -130,6 +138,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._file(query, head=head)
             elif parsed.path == "/v1/requests":
                 self._requests(query)
+            elif parsed.path == "/v1/codes":
+                self._codes(query)
             elif re.fullmatch(r"/v1/requests/[A-Za-z0-9_-]{1,64}/log", parsed.path):
                 self._request_log(parsed.path.split("/")[-2], query)
             else:
@@ -422,6 +432,29 @@ class _Handler(BaseHTTPRequestHandler):
             {"requests": requests, "now_ms": time.time_ns() // 1_000_000},
         )
 
+    def _codes(self, query: dict[str, list[str]]) -> None:
+        self._require_no_unknown(query, {"since", "wait"})
+        since = self._int(query, "since", 0, minimum=0)
+        wait_s = self._int(query, "wait", 0, minimum=0, maximum=60)
+        assert since is not None and wait_s is not None
+        self.server.code_queries.append(
+            (None if "since" not in query else since, wait_s),
+        )
+        deadline = time.monotonic() + wait_s
+        with self.server.code_condition:
+            while (self.server.codes_enabled and wait_s and not any(
+                    int(item["received_ms"]) > since for item in self.server.codes)):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.server.code_condition.wait(remaining)
+            enabled = self.server.codes_enabled
+            codes = ([dict(item) for item in self.server.codes
+                      if int(item["received_ms"]) > since] if enabled else [])
+        codes.sort(key=lambda item: int(item["received_ms"]))
+        now_ms = time.time_ns() // 1_000_000 + int(self.server.clock_offset_s * 1000)
+        self._send_json(200, {"codes": codes, "now_ms": now_ms, "enabled": enabled})
+
     def _update_request(self, request_id: str) -> None:
         raw_length = self.headers.get("Content-Length", "")
         if not raw_length.isdigit():
@@ -580,12 +613,14 @@ class FakePhone:
         timezone: str = "Asia/Shanghai",
         clock_offset_s: float = 0,
         app: str = "tentacle",
+        codes_enabled: bool = True,
     ):
         self.root_dir = Path(root_dir)
         self.token = token
         self.timezone = timezone
         self.clock_offset_s = clock_offset_s
         self.app = app
+        self.codes_enabled = codes_enabled
         self.url = ""
         self._requests: list[dict[str, object]] = []
         self._request_logs: dict[str, bytes] = {}
@@ -593,6 +628,10 @@ class FakePhone:
         self.claim_conflicts: set[str] = set()
         self._request_condition = threading.Condition()
         self._next_request = 1
+        self._codes: list[dict[str, object]] = []
+        self._code_condition = threading.Condition()
+        self._next_code = 1
+        self.code_queries: list[tuple[int | None, int]] = []
         self._server: _Server | None = None
         self._thread: threading.Thread | None = None
 
@@ -634,6 +673,40 @@ class FakePhone:
             self._request_condition.notify_all()
             return dict(request)
 
+    def add_code(
+        self,
+        code: str = "123456",
+        sender: str = "Example",
+        *,
+        source: str = "notification",
+        snippet: str | None = None,
+        received_ms: int | None = None,
+        **overrides: object,
+    ) -> dict[str, object]:
+        """Inject a relayed verification code and wake any long poll."""
+        phone_now = time.time_ns() // 1_000_000 + int(self.clock_offset_s * 1000)
+        with self._code_condition:
+            item: dict[str, object] = {
+                "id": f"c-{phone_now}-{self._next_code}",
+                "code": code,
+                "sender": sender,
+                "source": source,
+                "snippet": snippet if snippet is not None else f"Your code is {code}",
+                "received_ms": phone_now if received_ms is None else received_ms,
+            }
+            self._next_code += 1
+            item.update(overrides)
+            self._codes.append(item)
+            self._code_condition.notify_all()
+            return dict(item)
+
+    def set_codes_enabled(self, enabled: bool) -> None:
+        with self._code_condition:
+            self.codes_enabled = enabled
+            if self._server is not None:
+                self._server.codes_enabled = enabled
+            self._code_condition.notify_all()
+
     def start(self) -> "FakePhone":
         if self._server is not None:
             return self
@@ -644,6 +717,8 @@ class FakePhone:
             self.timezone, self.clock_offset_s, self.app,
             self._requests, self._request_logs, self.request_updates,
             self._request_condition, self.claim_conflicts,
+            self._codes, self.codes_enabled, self._code_condition,
+            self.code_queries,
         )
         host, port = self._server.server_address[:2]
         self.url = f"http://{host}:{port}"

@@ -25,6 +25,7 @@ class HttpServerTest {
     private lateinit var root: Path
     private lateinit var server: HttpServer
     private lateinit var requests: RequestStore
+    private lateinit var codes: CodeStore
     private val loopback: String = InetAddress.getLoopbackAddress().hostAddress
     private var token = "test-token"
 
@@ -32,12 +33,14 @@ class HttpServerTest {
     fun startServer() {
         root = Files.createDirectory(tempDir.resolve("primary"))
         requests = RequestStore(tempDir.resolve("requests").toFile())
+        codes = CodeStore()
         server = HttpServer(
             port = 0,
             bind = loopback,
             tokenProvider = { token },
             api = FileApi(listOf(StorageRoot("primary", root.toFile(), "Internal"))),
             requestStore = requests,
+            codeStore = codes,
             info = {
                 PingInfo(
                     version = "0.1.0-test",
@@ -105,6 +108,7 @@ class HttpServerTest {
             "/v1/stat?path=one.txt",
             "/v1/find",
             "/v1/file?path=one.txt",
+            "/v1/codes?wait=0",
         )
 
         targets.forEach { target ->
@@ -520,6 +524,74 @@ class HttpServerTest {
             assertEquals(200, listing.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
             requests.create("feature", "Release all waiters")
             polls.forEach { assertEquals(200, it.get(1, java.util.concurrent.TimeUnit.SECONDS).status) }
+        } finally { pool.shutdownNow() }
+    }
+
+    @Test
+    fun `codes endpoint reports disabled and returns safe entries oldest first`() {
+        val disabled = Json.parse(request("GET", "/v1/codes?wait=60").text) as Map<*, *>
+        assertEquals(false, disabled["enabled"])
+        assertEquals(emptyList<Any>(), disabled["codes"])
+        assertTrue((disabled["now_ms"] as Number).toLong() > 0)
+
+        codes.setEnabled(true)
+        val first = codes.capture("【Aliyun】code 123456", "Messages", "notification").entry!!
+        Thread.sleep(2)
+        val second = codes.capture("OTP AB12CD", "Microsoft", "sms").entry!!
+        val response = request("GET", "/v1/codes?since=${first.receivedMs - 1}&wait=0")
+        assertEquals(200, response.status)
+        val body = Json.parse(response.text) as Map<*, *>
+        assertEquals(true, body["enabled"])
+        val entries = body["codes"] as List<*>
+        assertEquals(listOf(first.id, second.id), entries.map { (it as Map<*, *>)["id"] })
+        assertEquals("123456", (entries.first() as Map<*, *>)["code"])
+        assertEquals("Aliyun", (entries.first() as Map<*, *>)["sender"])
+        assertEquals("notification", (entries.first() as Map<*, *>)["source"])
+        val newer = Json.parse(request("GET", "/v1/codes?since=${first.receivedMs}").text) as Map<*, *>
+        assertEquals(listOf(second.id), (newer["codes"] as List<*>).map { (it as Map<*, *>)["id"] })
+    }
+
+    @Test
+    fun `codes long poll wakes for a code and for disabling`() {
+        codes.setEnabled(true)
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            var since = System.currentTimeMillis()
+            var pending = pool.submit<HttpResponse> { request("GET", "/v1/codes?since=$since&wait=3") }
+            Thread.sleep(100)
+            assertFalse(pending.isDone)
+            codes.capture("验证码778899", "Service", "notification")
+            assertTrue(pending.get(1, java.util.concurrent.TimeUnit.SECONDS).text.contains("778899"))
+
+            since = System.currentTimeMillis()
+            pending = pool.submit<HttpResponse> { request("GET", "/v1/codes?since=$since&wait=3") }
+            Thread.sleep(100)
+            codes.setEnabled(false)
+            val disabled = Json.parse(pending.get(1, java.util.concurrent.TimeUnit.SECONDS).text) as Map<*, *>
+            assertEquals(false, disabled["enabled"])
+            assertEquals(emptyList<Any>(), disabled["codes"])
+        } finally { pool.shutdownNow() }
+        listOf("/v1/codes?wait=-1", "/v1/codes?wait=61", "/v1/codes?wait=oops", "/v1/codes?since=-1",
+            "/v1/codes?since=oops").forEach { target -> assertEquals(400, request("GET", target).status, target) }
+    }
+
+    @Test
+    fun `code and request polls share two wait slots while files remain available`() {
+        codes.setEnabled(true)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+        try {
+            val since = System.currentTimeMillis()
+            val codePoll = pool.submit<HttpResponse> { request("GET", "/v1/codes?since=$since&wait=3") }
+            val requestPoll = pool.submit<HttpResponse> { request("GET", "/v1/requests?wait=3") }
+            Thread.sleep(100)
+            val extra = pool.submit<HttpResponse> { request("GET", "/v1/codes?since=$since&wait=3") }
+            assertEquals(200, extra.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
+            assertEquals(200, pool.submit<HttpResponse> { request("GET", "/v1/ls") }
+                .get(1, java.util.concurrent.TimeUnit.SECONDS).status)
+            codes.capture("code 445566", "Service", "notification")
+            requests.create("feature", "Release waiter")
+            assertEquals(200, codePoll.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
+            assertEquals(200, requestPoll.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
         } finally { pool.shutdownNow() }
     }
 

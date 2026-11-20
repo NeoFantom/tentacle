@@ -61,6 +61,17 @@ class LoggingTest {
     }
 
     @Test
+    fun `redacts retained verification code values`() {
+        var codes = listOf("123456", "AB12CD")
+        val redactor = Redactor(currentCodes = { codes })
+        assertEquals("received [REDACTED] and [REDACTED]", redactor.redact("received 123456 and AB12CD"))
+        codes = emptyList()
+        assertEquals("received 123456", redactor.redact("received 123456"))
+        assertEquals("code=[REDACTED]", redactor.redact("code=654321"))
+        assertEquals("\"otp\":\"[REDACTED]\"", redactor.redact("\"otp\":\"AB12CD\""))
+    }
+
+    @Test
     fun `rotates in order timestamps lines and clears all files`() {
         var second = 0L
         val log = RotatingLog(directory, maxBytesPerFile = 64, files = 2, now = {

@@ -22,7 +22,10 @@ object AppLog {
         appContext = app
         log = RotatingLog(
             directory = java.io.File(app.filesDir, "logs"),
-            redactor = Redactor { listOf(settings.token) },
+            redactor = Redactor(
+                currentSecrets = { listOf(settings.token) },
+                currentCodes = { dev.tentacle.codes.CodeStores.get(app).codesForRedaction() },
+            ),
         )
     }
 

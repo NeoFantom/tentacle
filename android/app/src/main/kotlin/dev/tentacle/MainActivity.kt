@@ -128,6 +128,12 @@ class MainActivity : Activity() {
     private lateinit var settingsBody: Expander
     private lateinit var portText: TextView
     private lateinit var boot: Switch
+    private lateinit var codesSwitch: Switch
+    private lateinit var codesNotificationsSwitch: Switch
+    private lateinit var codesStatus: TextView
+    private lateinit var codesAccessHelp: LinearLayout
+    private lateinit var codesSmsHelp: LinearLayout
+    private var codesXiaomiHelp: TextView? = null
     private lateinit var updateStatusText: TextView
     private lateinit var checkUpdates: Button
     private lateinit var updateSourceField: EditText
@@ -150,6 +156,7 @@ class MainActivity : Activity() {
         override fun run() {
             if (!requestRefreshActive) return
             refreshRequests()
+            refreshCodes()
             scroll.postDelayed(this, REQUEST_REFRESH_MS)
         }
     }
@@ -178,6 +185,16 @@ class MainActivity : Activity() {
 
     private fun handleDebugIntent(intent: Intent) {
         if (!BuildConfig.DEBUG) return
+        if (intent.hasExtra("codes_enabled")) {
+            settings.codesEnabled = intent.getBooleanExtra("codes_enabled", false)
+            intent.removeExtra("codes_enabled")
+        }
+        intent.getStringExtra("inject_code_text")?.let { text ->
+            dev.tentacle.codes.CodeStores.capture(this, text,
+                intent.getStringExtra("inject_code_sender").orEmpty(), "notification")
+            intent.removeExtra("inject_code_text")
+            intent.removeExtra("inject_code_sender")
+        }
         // Test hooks for emulator end-to-end runs and screenshots; release builds ignore them.
         if (intent.getBooleanExtra("reset_update_prompt", false)) {
             settings.dismissedUpdateVersion = ""
@@ -348,6 +365,9 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == SMS_PERMISSION_REQUEST) {
+            if (settings.codesEnabled && !smsCodeAccess()) explainCodeSmsAccess()
+        }
         refresh()
     }
 
@@ -747,6 +767,7 @@ class MainActivity : Activity() {
         settingsCard = card().apply { setPadding(dp(14), dp(4), dp(18), dp(8)) }
         settingsBody = expander(settingsCard, getString(R.string.settings), large = true)
         val body = settingsBody.body
+        codesSection(body)
         val portRow = row(body).apply { gravity = Gravity.CENTER_VERTICAL }
         portText = text(portRow, "", 15f).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
         button(portRow, getString(R.string.change), ButtonKind.OUTLINE) { changePort() }
@@ -772,6 +793,125 @@ class MainActivity : Activity() {
             settings.updateSource = updateSourceField.text.toString().trim()
             AppUpdater.check(this, manual = true)
         }.also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(10) }
+    }
+
+    private fun codesSection(body: LinearLayout) {
+        codesSwitch = switch(body, getString(R.string.codes_enable), settings.codesEnabled) { enabled ->
+            if (!enabled) {
+                settings.codesEnabled = false
+                refreshCodes()
+            } else {
+                // A switch is only confirmed after the owner accepts the warning.
+                updating = true
+                codesSwitch.isChecked = false
+                updating = false
+                AlertDialog.Builder(this).setTitle(R.string.codes_title)
+                    .setMessage(R.string.codes_warning)
+                    .setNegativeButton(R.string.cancel, null)
+                    .setPositiveButton(R.string.codes_turn_on) { _, _ ->
+                        settings.codesEnabled = true
+                        refreshCodes()
+                        requestCodeSmsAccess()
+                    }.show()
+            }
+        }
+        codesStatus = text(body, "", 14f, secondary = true)
+        text(body, getString(R.string.codes_hint), 13f, secondary = true)
+        codesSmsHelp = column().also { body.addView(it) }
+        text(codesSmsHelp, codeSmsAccessMessage(), 13f, secondary = true)
+        button(codesSmsHelp, getString(R.string.codes_allow_sms), ButtonKind.OUTLINE, fill = true) {
+            requestCodeSmsAccess()
+        }
+        button(codesSmsHelp, getString(R.string.codes_app_info), ButtonKind.OUTLINE, fill = true) {
+            launch(appDetails())
+        }
+        if (isXiaomi()) codesXiaomiHelp = text(body, getString(R.string.codes_xiaomi_sms_help), 13f, secondary = true)
+        codesNotificationsSwitch = switch(body, getString(R.string.codes_notifications), settings.codesNotifications) { enabled ->
+            settings.codesNotifications = enabled
+            refreshCodes()
+            if (enabled && !notificationCodeAccess()) explainCodeAccess()
+        }
+        text(body, getString(R.string.codes_notifications_hint), 13f, secondary = true)
+        codesAccessHelp = column().also { body.addView(it) }
+        text(codesAccessHelp, getString(R.string.codes_access_help), 13f, secondary = true)
+        button(codesAccessHelp, getString(R.string.codes_open_access), ButtonKind.OUTLINE, fill = true) {
+            launch(Intent(SystemSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS), appDetails())
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            text(codesAccessHelp, getString(R.string.codes_restricted_help), 13f, secondary = true)
+            button(codesAccessHelp, getString(R.string.codes_app_info), ButtonKind.OUTLINE, fill = true) {
+                launch(appDetails())
+            }
+        }
+    }
+
+    private fun smsCodeAccess(): Boolean =
+        checkSelfPermission(Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
+
+    private fun requestCodeSmsAccess() {
+        if (smsCodeAccess()) return
+        if (settings.wasPermissionRequested(Manifest.permission.RECEIVE_SMS) &&
+            !shouldShowRequestPermissionRationale(Manifest.permission.RECEIVE_SMS)) {
+            explainCodeSmsAccess()
+        } else {
+            requestRuntimePermission(Manifest.permission.RECEIVE_SMS, SMS_PERMISSION_REQUEST)
+        }
+    }
+
+    private fun codeSmsAccessMessage(): String = buildList {
+        add(getString(R.string.codes_sms_help))
+        if (Build.VERSION.SDK_INT >= 33) add(getString(R.string.codes_restricted_help))
+        if (isXiaomi()) add(getString(R.string.codes_xiaomi_sms_help))
+    }.joinToString("\n\n")
+
+    private fun explainCodeSmsAccess() {
+        AlertDialog.Builder(this).setTitle(R.string.codes_needs_sms).setMessage(codeSmsAccessMessage())
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.codes_app_info) { _, _ -> launch(appDetails()) }
+            .show()
+    }
+
+    private fun notificationCodeAccess(): Boolean {
+        val component = ComponentName(this, dev.tentacle.codes.CodeNotificationListener::class.java)
+        if (Build.VERSION.SDK_INT >= 27) {
+            return getSystemService(NotificationManager::class.java).isNotificationListenerAccessGranted(component)
+        }
+        return SystemSettings.Secure.getString(contentResolver, "enabled_notification_listeners")
+            .orEmpty().split(':').any { ComponentName.unflattenFromString(it) == component }
+    }
+
+    private fun explainCodeAccess() {
+        val message = getString(R.string.codes_access_help) +
+            if (Build.VERSION.SDK_INT >= 33) "\n\n" + getString(R.string.codes_restricted_help) else ""
+        AlertDialog.Builder(this).setTitle(R.string.codes_open_access).setMessage(message)
+            .setNegativeButton(R.string.cancel, null)
+            .setNeutralButton(R.string.codes_app_info) { _, _ -> launch(appDetails()) }
+            .setPositiveButton(R.string.codes_open_access) { _, _ ->
+                launch(Intent(SystemSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS), appDetails())
+            }.show()
+    }
+
+    private fun refreshCodes() {
+        if (!::codesStatus.isInitialized) return
+        val enabled = settings.codesEnabled
+        val smsAccess = smsCodeAccess()
+        val latest = dev.tentacle.codes.CodeStores.get(this).latest()
+        codesStatus.text = when {
+            !enabled -> getString(R.string.codes_off)
+            !smsAccess -> getString(R.string.codes_needs_sms)
+            latest == null -> getString(R.string.codes_waiting)
+            else -> getString(R.string.codes_last, dev.tentacle.codes.CodeCaptureLog.safeSender(latest.sender, latest.code),
+                relativeAge(System.currentTimeMillis() - latest.receivedMs))
+        }
+        codesSmsHelp.visibility = if (enabled && !smsAccess) View.VISIBLE else View.GONE
+        codesXiaomiHelp?.visibility = if (enabled && smsAccess) View.VISIBLE else View.GONE
+        codesAccessHelp.visibility = if (enabled && settings.codesNotifications && !notificationCodeAccess())
+            View.VISIBLE else View.GONE
+        updating = true
+        codesSwitch.isChecked = enabled
+        codesNotificationsSwitch.isChecked = settings.codesNotifications
+        codesNotificationsSwitch.isEnabled = enabled
+        updating = false
     }
 
     private fun footerSection() {
@@ -852,6 +992,7 @@ class MainActivity : Activity() {
         refreshTailnet(state, tailnet)
         refreshTunnel(state, tunnel)
         refreshUpdates()
+        refreshCodes()
         portText.text = getString(R.string.port_value, settings.port)
         updating = true
         boot.isChecked = settings.startOnBoot
@@ -1527,6 +1668,7 @@ class MainActivity : Activity() {
 
     private companion object {
         val shownUpdatePromptVersions = mutableSetOf<String>()
+        const val SMS_PERMISSION_REQUEST = 3
         const val REQUEST_DRAFT_STATE = "request_draft"
         const val REQUEST_REFRESH_MS = 10_000L
     }

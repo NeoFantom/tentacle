@@ -30,6 +30,7 @@ class HttpServer(
     private val api: FileApi,
     private val info: () -> PingInfo,
     private val requestStore: RequestStore? = null,
+    private val codeStore: CodeStore? = null,
 ) {
     @Volatile var logger: (String) -> Unit = {}
     @Volatile var accessLogger: (String, String, Int, Long, Long) -> Unit = { _, _, _, _, _ -> }
@@ -146,12 +147,35 @@ class HttpServer(
                         },
                     ))
                 }
-                if ((route !in setOf("/v1/ping", "/v1/ls", "/v1/stat", "/v1/find", "/v1/file", "/v1/requests") &&
+                if ((route !in setOf("/v1/ping", "/v1/ls", "/v1/stat", "/v1/find", "/v1/file", "/v1/requests", "/v1/codes") &&
                     updateId == null && logId == null) || (updateId != null && request.method != "POST")) {
                     throw ApiException(404, "not_found")
                 }
                 val query = parseQuery(request.target.substringAfter('?', ""))
-                if (route == "/v1/requests" || updateId != null || logId != null) {
+                if (route == "/v1/codes") {
+                    val store = codeStore ?: throw ApiException(404, "not_found")
+                    val since = query.number("since") ?: 0L
+                    if (since < 0) throw ApiException(400, "bad_request", "Since must not be negative")
+                    val wait = query.integer("wait", 0)
+                    if (wait !in 0..60) throw ApiException(400, "bad_request", "Wait must be between 0 and 60 seconds")
+                    val initiallyEnabled = store.isEnabled
+                    val found = if (!initiallyEnabled) {
+                        emptyList()
+                    } else if (wait > 0 && longPollSlots.tryAcquire()) {
+                        try { store.awaitAfter(since, wait * 1000L) } finally { longPollSlots.release() }
+                    } else {
+                        store.listAfter(since)
+                    }
+                    val enabled = store.isEnabled
+                    val codes = if (enabled) found else emptyList()
+                    val result = linkedMapOf(
+                        "codes" to codes.map { it.toJson() },
+                        "now_ms" to System.currentTimeMillis(),
+                        "enabled" to enabled,
+                    )
+                    committed = true
+                    writeJson(output, 200, Json.stringify(result).toByteArray(Charsets.UTF_8), false)
+                } else if (route == "/v1/requests" || updateId != null || logId != null) {
                     val store = requestStore ?: throw ApiException(404, "not_found")
                     if (logId != null) {
                         val body = store.log(logId).toByteArray(Charsets.UTF_8)

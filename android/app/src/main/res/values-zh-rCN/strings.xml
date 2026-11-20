@@ -233,4 +233,24 @@
     <string name="internal_storage">内部存储</string>
     <string name="notification_status">%1$s · %2$s</string>
     <string name="notification_tailnet">%1$s · Tailscale：%2$s</string>
+
+    <!-- Verification code relay -->
+    <string name="codes_title">验证码转发</string>
+    <string name="codes_enable">将验证码转发给电脑</string>
+    <string name="codes_turn_on">开启</string>
+    <string name="codes_warning">请允许接收新短信，电脑即可读取其中的验证码，每条保留 10 分钟。不会读取历史短信。支付、转账等涉及资金操作的验证码绝不会转发。</string>
+    <string name="codes_hint">验证码仅在内存中保留 10 分钟，不会转发支付、转账或提现等资金操作的验证码。持有手机 token 的人都能读取已转发的验证码，不需要时请关闭。电脑连接时，文件服务须保持运行。</string>
+    <string name="codes_access_help">可选：打开通知使用权设置，允许 Tentacle 读取应用通知中的验证码。</string>
+    <string name="codes_open_access">打开设置</string>
+    <string name="codes_app_info">应用信息</string>
+    <string name="codes_restricted_help">Android 13 及以上版本通过安装包安装的应用，可能需要先打开应用信息 → 右上角 ⋮ → 允许受限设置，再返回 Tentacle 重新授权。</string>
+    <string name="codes_notifications">同时读取应用通知中的验证码</string>
+    <string name="codes_notifications_hint">Android 15 及以上版本会隐藏其他应用通知中的验证码；此功能主要适用于 Android 14 及更早版本，或应用内发送的验证码。</string>
+    <string name="codes_sms_help">接收新验证码短信需要短信权限。如果授权被拒绝或受限，请打开应用信息 → 权限 → 短信 → 允许。不会读取历史短信。</string>
+    <string name="codes_allow_sms">允许短信</string>
+    <string name="codes_xiaomi_sms_help">小米、Redmi 和 POCO 的 MIUI 或 HyperOS 还需要单独允许通知类短信：应用信息 → 权限 → 通知类短信 → 允许。这项权限控制验证码和通知短信。</string>
+    <string name="codes_off">验证码转发未开启</string>
+    <string name="codes_needs_sms">需要短信权限</string>
+    <string name="codes_waiting">等待验证码</string>
+    <string name="codes_last">最近收到来自%1$s的验证码，%2$s前</string>
 </resources>

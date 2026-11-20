@@ -4,6 +4,7 @@ import android.content.Context
 import dev.tentacle.core.Tokens
 
 class Settings(context: Context) {
+    private val contextForCodes = context.applicationContext
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     val token: String
@@ -23,6 +24,17 @@ class Settings(context: Context) {
             require(value in 1024..65535) { "Port must be between 1024 and 65535" }
             prefs.edit().putInt("port", value).apply()
         }
+
+    var codesEnabled: Boolean
+        get() = prefs.getBoolean("codes_enabled", false)
+        set(value) {
+            prefs.edit().putBoolean("codes_enabled", value).apply()
+            dev.tentacle.codes.CodeStores.get(contextForCodes).setEnabled(value)
+        }
+
+    var codesNotifications: Boolean
+        get() = prefs.getBoolean("codes_notifications", false)
+        set(value) { prefs.edit().putBoolean("codes_notifications", value).apply() }
 
     var startOnBoot: Boolean
         get() = prefs.getBoolean("start_on_boot", prefs.getBoolean("started_once", false))

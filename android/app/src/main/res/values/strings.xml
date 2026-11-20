@@ -233,4 +233,24 @@
     <string name="internal_storage">Internal</string>
     <string name="notification_status">%1$s · %2$s</string>
     <string name="notification_tailnet">%1$s · Tailscale: %2$s</string>
+
+    <!-- Verification code relay -->
+    <string name="codes_title">Verification codes</string>
+    <string name="codes_enable">Relay verification codes to the computer</string>
+    <string name="codes_turn_on">Turn on</string>
+    <string name="codes_warning">Allow incoming SMS so your computer can read verification codes for 10 minutes after they arrive. Old messages are not read. Codes for payments and transfers are never relayed.</string>
+    <string name="codes_hint">Codes stay in memory for 10 minutes. Payment, transfer and withdrawal codes are never relayed. Anyone with your phone token can read relayed codes; leave this off when not needed. The file server must be running for the computer to connect.</string>
+    <string name="codes_access_help">Optional: open notification access and allow Tentacle to read codes from app notifications.</string>
+    <string name="codes_open_access">Open settings</string>
+    <string name="codes_app_info">App info</string>
+    <string name="codes_restricted_help">On Android 13 and newer, sideloaded apps may first need App info → ⋮ → Allow restricted settings. Then return to Tentacle and try granting access again.</string>
+    <string name="codes_notifications">Also read codes from app notifications</string>
+    <string name="codes_notifications_hint">Android 15 and newer hide codes from other apps\' notifications; this mainly helps on Android 14 and older or for codes sent inside apps.</string>
+    <string name="codes_sms_help">SMS permission is needed to receive new verification messages. If access was denied or blocked, open App info → Permissions → SMS → Allow. Old messages are not read.</string>
+    <string name="codes_allow_sms">Allow SMS</string>
+    <string name="codes_xiaomi_sms_help">On Xiaomi, Redmi and POCO with MIUI or HyperOS, also allow App info → Permissions → Notification SMS (通知类短信) → Allow. This separate permission controls verification and notification messages.</string>
+    <string name="codes_off">Code relay is off</string>
+    <string name="codes_needs_sms">Needs SMS permission</string>
+    <string name="codes_waiting">Waiting for codes</string>
+    <string name="codes_last">Last code from %1$s, %2$s ago</string>
 </resources>

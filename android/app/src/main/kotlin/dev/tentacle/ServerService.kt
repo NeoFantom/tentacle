@@ -87,6 +87,7 @@ class ServerService : Service() {
                     tokenProvider = { settings.token },
                     api = api,
                     requestStore = RequestStores.get(this),
+                    codeStore = dev.tentacle.codes.CodeStores.get(this),
                     info = {
                         PingInfo(
                             version = BuildConfig.VERSION_NAME,
