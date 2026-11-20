@@ -482,7 +482,9 @@ class Watcher:
                     if once:
                         return 0
                 except PhoneError as exc:
-                    if exc.code not in ('unreachable', 'timeout', 'not_found'):
+                    # Only a rejected token is fatal; anything else (offline, old app,
+                    # a proxy hiccup) is waited out so the service keeps running.
+                    if exc.code in ('unauthorized', 'forbidden'):
                         self.report(f'Phone request failed ({exc.code}).')
                         return 1
                     if not offline:
