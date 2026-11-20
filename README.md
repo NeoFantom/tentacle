@@ -128,15 +128,24 @@ terminal or use the manual command printed by `setup`. `tentacle requests list`
 shows recent requests; `tentacle requests watch --once` handles at most one
 request and `tentacle requests run-once` is its alias.
 
-A command defined as an interactive Bash function can be used by selecting an
-interactive shell. For example, if a local Bash startup file defines `cx`, use:
+If your agent is a shell function or alias from an interactive startup file
+(for example a `cx` function in `~/.bashrc`), don't run it through `bash -ic`:
+many startup files read standard input and swallow the prompt. Use a small
+wrapper script instead, which imports the function without giving the startup
+file the prompt:
 
 ```bash
-tentacle requests setup --shell "bash -ic" --command "cx exec -" --repo ~/src/tentacle
+#!/usr/bin/env bash
+# ~/bin/tentacle-agent.sh
+eval "$(bash -ic 'declare -p PATH $(compgen -e | grep -i proxy); declare -f cx' </dev/null 2>/dev/null)"
+cx exec -
 ```
 
-The prompt remains on standard input; Bash may print harmless job-control
-warnings when it is interactive without a terminal. The command may instead use
+```bash
+tentacle requests setup --command ~/bin/tentacle-agent.sh --repo ~/src/tentacle
+```
+
+The prompt arrives on standard input. The command may instead use
 `{prompt_file}`, `{result_file}`, `{log_file}` and `{repo}` placeholders.
 
 Request text is limited to 1000 shared CJK/word units and 8000 UTF-16 code
