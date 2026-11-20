@@ -83,8 +83,14 @@ phone's base URLs in preference order; when it is empty, `phone.url` is used
 alone. For each command the CLI:
 
 1. probes all candidates at once with `GET /v1/ping` (2.5 s timeout; LAN,
-   loopback and tailnet addresses never go through a system proxy);
-2. picks the first working candidate in list order. A tailnet address
+   loopback and tailnet addresses never go through a system proxy), together
+   with the LAN addresses the phone reported last time. The phone's ping answer
+   lists its current Wi-Fi/Ethernet base URLs (`lan`); any of them not tried yet
+   is probed right away and remembered, so a changed Wi-Fi address is found
+   without re-pairing;
+2. picks a reachable **LAN** address (private, non-tailnet) first — same network
+   means no relay and full Wi-Fi speed. Otherwise the first working candidate in
+   list order wins. A tailnet address
    (100.64.0.0/10) counts only while it is a direct path: if the computer's
    `tailscale status --json` shows that peer as relayed and a later candidate
    works (for example your own server), the later one wins; if nothing else

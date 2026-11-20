@@ -87,6 +87,8 @@ class ServerService : Service() {
                             roots = api.roots,
                             timezone = DeviceEnvironment.timezoneId,
                             tailnet = TailnetStatus.value.pingJson(),
+                            lan = DeviceEnvironment.addresses(this).filter { it.priority == 0 }
+                                .map { "http://${it.host}:${settings.port}" },
                         )
                     },
                 )

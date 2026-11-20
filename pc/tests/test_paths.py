@@ -83,8 +83,43 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(selection.url, lan)
         self.assertEqual([r.status for r in selection.results], ["unreachable", "ok", "ok"])
         self.assertEqual(sorted(self.probed), sorted([tailnet, lan, public]))
+        # A reachable LAN address beats an earlier tailnet one; otherwise order decides.
         self.answers[tailnet] = PathResult(tailnet, "ok", 9.0)
+        self.assertEqual(self.selector([tailnet, lan, public]).select(refresh=True).url, lan)
+        self.answers.pop(lan)
         self.assertEqual(self.selector([tailnet, lan, public]).select(refresh=True).url, tailnet)
+
+    def test_lan_addresses_reported_by_the_phone_are_learned_and_preferred(self):
+        public, new_lan = "https://example.com/t", "http://10.1.2.3:8765"
+        self.answers = {public: PathResult(public, "ok", 80.0, lan=[new_lan]),
+                        new_lan: PathResult(new_lan, "ok", 2.0)}
+        selection = self.selector([public]).select()
+        self.assertEqual(selection.url, new_lan)
+        self.assertEqual(self.probed, [public, new_lan])
+        # Remembered: next selection probes the learned LAN address directly.
+        self.probed.clear()
+        clock = Clock(5000.0)
+        self.assertEqual(self.selector([public], clock=clock).select().url, new_lan)
+        self.assertIn(new_lan, self.probed)
+        # Phone moved to another network: LAN address dead, falls back, keeps working.
+        self.answers = {public: PathResult(public, "ok", 80.0, lan=[])}
+        selector = self.selector([public], clock=Clock(9000.0))
+        self.assertEqual(selector.select(refresh=True).url, public)
+        self.assertEqual(selector.learned_lan(), [])
+
+    def test_invalidate_keeps_learned_lan_addresses(self):
+        public, lan = "https://example.com/t", "http://10.1.2.3:8765"
+        self.answers = {public: PathResult(public, "ok", 80.0, lan=[lan]), lan: PathResult(lan, "ok", 2.0)}
+        selector = self.selector([public])
+        selector.select()
+        selector.invalidate()
+        self.assertIsNone(selector.cached())
+        self.assertEqual(selector.learned_lan(), [lan])
+
+    def test_only_private_http_urls_are_accepted_from_the_phone(self):
+        payload = {"lan": ["http://10.0.0.5:8765", "https://10.0.0.6:8765", "http://8.8.8.8:8765",
+                           "http://100.64.0.1:8765", 7, "http://192.168.1.4:8765/"]}
+        self.assertEqual(paths._lan_urls(payload), ["http://10.0.0.5:8765", "http://192.168.1.4:8765"])
 
     def test_relayed_tailnet_is_demoted_when_a_later_candidate_works(self):
         tailnet, public = "http://100.64.0.1:8765", "https://example.com/t"

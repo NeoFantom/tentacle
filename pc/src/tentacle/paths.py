@@ -3,7 +3,11 @@
 The pairing link can carry several base URLs (tailnet, Wi-Fi, other LAN,
 public URL).  Every candidate speaks the same phone API; this module probes
 them with a short ``GET /v1/ping`` and picks the first one that works, in
-order.  A tailnet candidate (100.64.0.0/10) counts only while Tailscale uses a
+order, except that a reachable LAN address always wins: the phone reports its
+current Wi-Fi/Ethernet base URLs in ``/v1/ping`` (``lan``), the computer
+remembers them and probes them too, so being on the same network as the phone
+is detected automatically even after the phone's address changed.  A tailnet
+candidate (100.64.0.0/10) counts only while Tailscale uses a
 direct path to it: when the local ``tailscale`` CLI reports the peer as
 relayed and a later non-tailnet candidate works, the later one wins.  The
 winner is cached for a short time in the data directory so consecutive
@@ -26,7 +30,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -51,10 +55,14 @@ class PathResult:
     status: str
     rtt_ms: float | None = None
     detail: str = ""
+    lan: list[str] | None = field(default=None, repr=False)  # None: phone did not report
 
     @property
     def reachable(self) -> bool:
         return self.status != "unreachable"
+
+    def to_json(self) -> dict[str, Any]:
+        return {"url": self.url, "status": self.status, "rtt_ms": self.rtt_ms, "detail": self.detail}
 
 
 @dataclass
@@ -64,7 +72,7 @@ class Selection:
     cached: bool = False
 
     def to_json(self) -> list[dict[str, Any]]:
-        return [dict(asdict(result), chosen=result.url == self.url) for result in self.results]
+        return [dict(result.to_json(), chosen=result.url == self.url) for result in self.results]
 
 
 def candidates(phone_cfg: Any) -> list[str]:
@@ -101,6 +109,24 @@ def is_local(url: str) -> bool:
         isinstance(ip, ipaddress.IPv4Address) and ip in TAILNET)
 
 
+def is_lan(url: str) -> bool:
+    """A private (RFC 1918 / ULA) or link-local address that is not a tailnet one."""
+    ip = _host_ip(url)
+    if ip is None or ip.is_loopback:
+        return False
+    if isinstance(ip, ipaddress.IPv4Address) and ip in TAILNET:
+        return False
+    return ip.is_private or ip.is_link_local
+
+
+def _lan_urls(payload: dict[str, Any]) -> list[str] | None:
+    raw = payload.get("lan")
+    if not isinstance(raw, list):
+        return None
+    return [str(u).strip().rstrip("/") for u in raw
+            if isinstance(u, str) and u.startswith("http://") and is_lan(u.strip())]
+
+
 def opener(url: str, use_system_proxy: bool) -> urllib.request.OpenerDirector:
     if use_system_proxy and not is_local(url):
         return urllib.request.build_opener()
@@ -127,7 +153,7 @@ def probe(url: str, token: str, use_system_proxy: bool = False,
     rtt = round((time.perf_counter() - started) * 1000, 1)
     if not isinstance(payload, dict) or payload.get("app") != "tentacle" or payload.get("api") != 1:
         return PathResult(url, "unreachable", rtt, "not a Tentacle API v1 server")
-    return PathResult(url, "ok", rtt)
+    return PathResult(url, "ok", rtt, lan=_lan_urls(payload))
 
 
 def tailscale_status(run: Callable[..., Any] = subprocess.run) -> dict[str, Any] | None:
@@ -195,45 +221,60 @@ class PathSelector:
     def multiple(self) -> bool:
         return len(self.urls) > 1
 
-    def cached(self) -> str | None:
+    def _load(self) -> dict[str, Any]:
         if self.cache_path is None:
-            return None
+            return {}
         try:
             data = json.loads(self.cache_path.read_text(encoding="utf-8"))
-            url, saved, key = data["url"], float(data["time"]), data["key"]
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict) or data.get("key") != _cache_key(self.urls):
+            return {}
+        return data
+
+    def learned_lan(self) -> list[str]:
+        """LAN base URLs the phone reported last time (kept until replaced)."""
+        raw = self._load().get("lan")
+        return [u for u in raw if isinstance(u, str) and is_lan(u)] if isinstance(raw, list) else []
+
+    def cached(self) -> str | None:
+        data = self._load()
+        try:
+            url, saved = data["url"], float(data["time"])
+        except (KeyError, TypeError, ValueError):
             return None
         age = self._clock() - saved
-        if key != _cache_key(self.urls) or url not in self.urls or not 0 <= age < self.ttl_s:
+        if not url or (url not in self.urls and url not in self.learned_lan()) \
+                or not 0 <= age < self.ttl_s:
             return None
         return url
 
-    def _remember(self, url: str) -> None:
+    def _remember(self, url: str, lan: list[str] | None = None) -> None:
         if self.cache_path is None:
             return
+        lan = self.learned_lan() if lan is None else lan
         try:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.cache_path.with_suffix(".tmp")
             temporary.write_text(json.dumps({"url": url, "time": self._clock(),
-                                             "key": _cache_key(self.urls)}), encoding="utf-8")
+                                             "key": _cache_key(self.urls), "lan": lan}),
+                                 encoding="utf-8")
             os.replace(temporary, self.cache_path)
         except OSError:
             pass  # The cache is only an optimisation.
 
     def invalidate(self) -> None:
-        if self.cache_path is not None:
-            try:
-                self.cache_path.unlink()
-            except OSError:
-                pass
+        """Forget the chosen URL but keep the learned LAN addresses."""
+        if self.cache_path is not None and self.cache_path.exists():
+            self._remember("", self.learned_lan())
 
     def select(self, *, refresh: bool = False, exclude: Iterable[str] = ()) -> Selection:
         """Return the chosen URL. Raises ``LookupError`` if none is reachable."""
         excluded = set(exclude)
         if not self.urls:
             raise LookupError("phone URL is not configured")
-        if len(self.urls) == 1 and not refresh:
-            # Nothing to choose; keep single-URL behaviour without an extra request.
+        if len(self.urls) == 1 and not refresh and (is_lan(self.urls[0]) or not self.cache_path):
+            # Nothing better to find; keep single-URL behaviour without an extra request.
             self.last = Selection(self.urls[0])
             return self.last
         if not refresh and not excluded:
@@ -241,9 +282,18 @@ class PathSelector:
             if url is not None:
                 self.last = Selection(url, cached=True)
                 return self.last
-        pending = [url for url in self.urls if url not in excluded]
-        with ThreadPoolExecutor(max_workers=max(1, len(pending))) as pool:
-            results = list(pool.map(self._probe, pending))
+        learned = self.learned_lan()
+        pending = [url for url in learned + self.urls if url not in excluded]
+        pending = list(dict.fromkeys(pending))
+        results = self._probe_all(pending)
+        # The phone tells us its current LAN addresses; try any we have not tried yet.
+        reports = [r.lan for r in results if r.reachable and r.lan is not None]
+        reported = list(dict.fromkeys(u for lan in reports for u in lan))
+        extra = [u for u in reported if u not in pending and u not in excluded]
+        if extra:
+            results += self._probe_all(extra)
+        if reports:
+            learned = reported
         reachable_tailnet = [r for r in results if r.reachable and is_tailnet(r.url)]
         if reachable_tailnet:
             status = self._status()
@@ -251,12 +301,20 @@ class PathSelector:
                 path = peer_path(status, urllib.parse.urlsplit(result.url).hostname or "")
                 if path:
                     result.status = path
-        chosen = next((r for r in results if r.status in {"ok", "direct"}), None)
+        chosen = next((r for r in results if r.reachable and is_lan(r.url)), None)
+        if chosen is None:
+            chosen = next((r for r in results if r.status in {"ok", "direct"}), None)
         if chosen is None:
             chosen = next((r for r in results if r.reachable), None)
         self.last = Selection(chosen.url if chosen else "", results)
         if chosen is None:
             details = "; ".join(f"{r.url}: {r.detail or r.status}" for r in results)
             raise LookupError(f"no phone address is reachable ({details})")
-        self._remember(chosen.url)
+        self._remember(chosen.url, learned)
         return self.last
+
+    def _probe_all(self, urls: list[str]) -> list[PathResult]:
+        if not urls:
+            return []
+        with ThreadPoolExecutor(max_workers=len(urls)) as pool:
+            return list(pool.map(self._probe, urls))

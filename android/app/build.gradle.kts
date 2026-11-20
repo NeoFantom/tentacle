@@ -27,8 +27,8 @@ android {
         applicationId = "dev.tentacle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.3.1"
         buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
     }
     buildFeatures { buildConfig = true }
@@ -116,6 +116,8 @@ val buildTsbridge by tasks.registering(Exec::class) {
         environment("ANDROID_NDK_HOME", ndk.path)
         sdkDirectory?.let { environment("ANDROID_HOME", it) }
         environment("CGO_ENABLED", "1")
+        // Reproducible builds; also avoids "error obtaining VCS status" inside gomobile's work dir.
+        environment("GOFLAGS", (listOfNotNull(System.getenv("GOFLAGS")) + "-buildvcs=false").joinToString(" "))
         commandLine(gomobile.path, "bind", "-target=android/arm64,android/amd64", "-androidapi", "26",
             "-javapkg", "dev.tentacle.tailnet.bridge", "-trimpath", "-tags", tsbridgeTags,
             "-ldflags", "-s -w -linkmode=external -extldflags=-Wl,-z,max-page-size=16384 " +

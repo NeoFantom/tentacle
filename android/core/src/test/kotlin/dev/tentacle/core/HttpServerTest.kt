@@ -169,6 +169,15 @@ class HttpServerTest {
     }
 
     @Test
+    fun `ping info adds current LAN base URLs only when supplied`() {
+        val info = PingInfo("0.3.1", "Test Device", 35, true, emptyList(), "UTC",
+            lan = listOf("http://192.168.0.5:8765"))
+        assertEquals("{\"app\":\"tentacle\",\"api\":1,\"version\":\"0.3.1\",\"device\":\"Test Device\"," +
+            "\"android_sdk\":35,\"roots\":[],\"all_files_access\":true,\"time_ms\":5,\"timezone\":\"UTC\"," +
+            "\"lan\":[\"http://192.168.0.5:8765\"]}", Json.stringify(info.toJson(5)))
+    }
+
+    @Test
     fun `ls stat and find return contract JSON`() {
         Files.createDirectory(root.resolve("Calls"))
         val audio = Files.write(root.resolve("Calls/voice.AAC"), byteArrayOf(1, 2, 3))
