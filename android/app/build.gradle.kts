@@ -19,6 +19,8 @@ require(signingValues.values.all { it.isNullOrBlank() } || signingValues.values.
     "Release signing requires all four TENTACLE_KEYSTORE, TENTACLE_KEYSTORE_PASSWORD, TENTACLE_KEY_ALIAS and TENTACLE_KEY_PASSWORD values"
 }
 
+val releaseAllAbis = providers.gradleProperty("tentacle.allAbis").orElse("false").get().toBoolean()
+
 android {
     namespace = "dev.tentacle"
     compileSdk = 35
@@ -27,11 +29,22 @@ android {
         applicationId = "dev.tentacle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.4.1"
+        versionCode = 7
+        versionName = "0.4.2"
         buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
     }
     buildFeatures { buildConfig = true }
+    buildTypes {
+        getByName("debug") {
+            ndk.abiFilters += setOf("arm64-v8a", "x86_64")
+        }
+        getByName("release") {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            ndk.abiFilters += if (releaseAllAbis) setOf("arm64-v8a", "x86_64") else setOf("arm64-v8a")
+        }
+    }
     if (signingValues.values.all { !it.isNullOrBlank() }) {
         signingConfigs.create("release") {
             storeFile = file(signingValues.getValue("TENTACLE_KEYSTORE")!!)
@@ -49,6 +62,18 @@ android {
     // The Tailscale bridge adds ~21 MB of native code per ABI. Compress it in the
     // APK (extracted at install) so downloads and in-app updates stay small.
     packaging.jniLibs.useLegacyPackaging = true
+    // AGP excludes these by default; retain and merge all dependency license/notice texts.
+    val licenseFiles = setOf(
+        "/META-INF/LICENSE", "/META-INF/LICENSE.txt", "/META-INF/NOTICE", "/META-INF/NOTICE.txt",
+        "/LICENSE", "/LICENSE.txt", "/NOTICE", "/NOTICE.txt",
+    )
+    packaging.resources.excludes.removeAll(licenseFiles)
+    packaging.resources.merges += licenseFiles
+    // Compiler/debug/OSGi metadata has no runtime consumer here. Preserve licenses and notices.
+    packaging.resources.excludes += setOf(
+        "kotlin/**.kotlin_builtins", "META-INF/*.version", "META-INF/*.kotlin_module",
+        "DebugProbesKt.bin", "kotlin-tooling-metadata.json", "META-INF/versions/**/OSGI-INF/MANIFEST.MF",
+    )
 }
 
 kotlin {
@@ -57,19 +82,29 @@ kotlin {
 }
 
 // Embedded Tailscale: the Go module in ../tsbridge is bound with gomobile into an
-// AAR under build/. Gradle reruns the task only when the Go sources change.
+// AAR per target set under build/. Gradle tracks sources, targets, tags and version stamps.
 // Toolchain lookup: Go and gomobile from PATH (or the tentacle.goBin and
 // tentacle.gomobileBin Gradle properties), the NDK from ANDROID_NDK_HOME or the
 // newest <sdk>/ndk/<version>. See android/README.md.
 val tsbridgeDir = rootProject.file("tsbridge")
-val tsbridgeAar = layout.buildDirectory.file("tsbridge/tsbridge.aar")
+val tsbridgeArm64Aar = layout.buildDirectory.file("tsbridge/arm64/tsbridge.aar")
+val tsbridgeAllAar = layout.buildDirectory.file("tsbridge/all/tsbridge.aar")
+// Keep connectivity/login/reconnect features: netstack, NAT traversal, UDP, portmapper,
+// DNS/fallback roots/cache, health, Tailnet Lock, ACE, netmap caching and system proxies.
+// tsnet v1.104.7 references ACME/Serve methods unconditionally; omitting either fails compilation.
+// CLI is opt-in upstream (ts_include_cli); this bridge never enables it.
 val tsbridgeTags = listOf(
-    "aws", "kube", "ssh", "taildrop", "drive", "tap", "tpm", "capture", "appconnectors",
-    "advertiseexitnode", "advertiseroutes", "bird", "clientupdate", "relayserver", "syspolicy",
-    "synology", "systray", "desktop_sessions", "dbus", "networkmanager", "resolved", "iptables",
-    "logtail", "netlog", "posture", "cloud", "webclient", "doctor", "portlist", "conn25",
-    "oauthkey", "identityfederation", "debugeventbus", "completion", "flashappliance",
-    "linuxdnsfight", "sdnotify", "syslog", "tundevstats", "gro",
+    "advertiseexitnode", "advertiseroutes", "androidbin", "androiddns", "appconnectors", "aws",
+    "bird", "c2n", "captiveportal", "capture", "cliconndiag", "clientmetrics", "clientupdate", "cloud",
+    "colorable", "completion", "completion_scripts", "conn25", "connreject", "dbus", "debug",
+    "debugeventbus", "debugportmapper", "desktop_sessions", "doctor", "drive", "favorites",
+    "flashappliance", "gro", "hujsonconf", "identityfederation", "ipnbus", "iptables", "kube",
+    "linkspeed", "linuxdnsfight", "listenrawdisco", "logtail", "netlog", "networkmanager", "oauthkey",
+    "osrouter", "outboundproxy", "peerapiclient", "peerapiserver", "portlist", "posture", "qrcodes",
+    "relayserver", "remoteconfig", "resolved", "routecheck", "runtimemetrics", "sdnotify",
+    "serviceclientprefs", "ssh", "synology", "syslog", "syspolicy", "systray", "taildrop", "tap", "tpm",
+    "tundevstats", "unixsocketidentity", "useexitnode", "usermetrics", "useroutes", "wakeonlan",
+    "webbrowser", "webclient",
 ).joinToString(",") { "ts_omit_$it" }
 // Report the real Tailscale version to the control server (gomobile builds lack Go build info).
 val tailscaleVersion = Regex("""tailscale\.com v([0-9][^\s]*)""")
@@ -87,14 +122,15 @@ fun findOnPath(name: String, extra: List<String> = emptyList()): File? =
     (extra + System.getenv("PATH").orEmpty().split(File.pathSeparator))
         .filter { it.isNotBlank() }.map { File(it, name) }.firstOrNull { it.canExecute() }
 
-val buildTsbridge by tasks.registering(Exec::class) {
+fun registerTsbridgeBuild(name: String, target: String, aar: Provider<RegularFile>) = tasks.register<Exec>(name) {
     group = "build"
-    description = "Builds the embedded Tailscale bridge AAR with gomobile."
+    description = "Builds the embedded Tailscale bridge AAR for $target with gomobile."
     inputs.files(fileTree(tsbridgeDir) { include("**/*.go", "go.mod", "go.sum") })
         .withPropertyName("goSources")
+    inputs.property("target", target)
     inputs.property("tags", tsbridgeTags)
     inputs.property("tailscaleVersion", tailscaleVersion)
-    outputs.file(tsbridgeAar)
+    outputs.file(aar)
     workingDir = tsbridgeDir
     doFirst {
         val go = findOnPath("go", listOfNotNull(goBinProperty, System.getenv("GOROOT")?.let { "$it/bin" }))
@@ -110,7 +146,7 @@ val buildTsbridge by tasks.registering(Exec::class) {
                     .fold(0L) { acc, part -> acc * 100000 + part } }
             ?: throw GradleException("The Android NDK is required: sdkmanager \"ndk;<version>\" " +
                 "or set ANDROID_NDK_HOME.")
-        tsbridgeAar.get().asFile.parentFile.mkdirs()
+        aar.get().asFile.parentFile.mkdirs()
         environment("PATH", listOf(go.parent, gomobile.parent, System.getenv("PATH").orEmpty())
             .joinToString(File.pathSeparator))
         environment("ANDROID_NDK_HOME", ndk.path)
@@ -118,21 +154,25 @@ val buildTsbridge by tasks.registering(Exec::class) {
         environment("CGO_ENABLED", "1")
         // Reproducible builds; also avoids "error obtaining VCS status" inside gomobile's work dir.
         environment("GOFLAGS", (listOfNotNull(System.getenv("GOFLAGS")) + "-buildvcs=false").joinToString(" "))
-        commandLine(gomobile.path, "bind", "-target=android/arm64,android/amd64", "-androidapi", "26",
+        commandLine(gomobile.path, "bind", "-target=$target", "-androidapi", "26",
             "-javapkg", "dev.tentacle.tailnet.bridge", "-trimpath", "-tags", tsbridgeTags,
             "-ldflags", "-s -w -linkmode=external -extldflags=-Wl,-z,max-page-size=16384 " +
                 "-X tailscale.com/version.longStamp=$tailscaleVersion-tentacle " +
                 "-X tailscale.com/version.shortStamp=$tailscaleVersion",
-            "-o", tsbridgeAar.get().asFile.path, ".")
+            "-o", aar.get().asFile.path, ".")
     }
 }
 
-tasks.named("preBuild") { dependsOn(buildTsbridge) }
+val buildTsbridgeArm64 = registerTsbridgeBuild("buildTsbridgeArm64", "android/arm64", tsbridgeArm64Aar)
+val buildTsbridgeAll = registerTsbridgeBuild("buildTsbridgeAll", "android/arm64,android/amd64", tsbridgeAllAar)
+val releaseTsbridgeAar = if (releaseAllAbis) tsbridgeAllAar else tsbridgeArm64Aar
+val buildReleaseTsbridge = if (releaseAllAbis) buildTsbridgeAll else buildTsbridgeArm64
 
 dependencies {
     implementation(project(":core"))
     implementation(libs.jsch)
-    implementation(files(tsbridgeAar).builtBy(buildTsbridge))
+    debugImplementation(files(tsbridgeAllAar).builtBy(buildTsbridgeAll))
+    releaseImplementation(files(releaseTsbridgeAar).builtBy(buildReleaseTsbridge))
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
 }

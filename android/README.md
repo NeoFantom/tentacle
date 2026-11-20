@@ -6,9 +6,11 @@ appearance through DeviceDefault themes, and has no AndroidX or Material
 dependency. Its runtime dependencies are `com.github.mwiede:jsch` (SSH reverse
 tunnel) and the Go bridge in `tsbridge/` (embedded Tailscale, built from source
 into an AAR); `:core` remains pure JVM. The application id and label are
-`dev.tentacle` and `Tentacle`; version is `0.3.0` (code 3), minimum API 26,
-compile/target API 35. JDK 21 builds Java 17 bytecode; JUnit is test-only.
-APKs contain `arm64-v8a` (phones) and `x86_64` (emulator) native code.
+`dev.tentacle` and `Tentacle`; the version is declared in `app/build.gradle.kts`.
+Minimum API is 26, compile/target API is 35. JDK 21 builds Java 17 bytecode;
+JUnit is test-only. Release APKs contain only `arm64-v8a` (phones); debug APKs
+contain both `arm64-v8a` and `x86_64` (emulator). Set
+`-Ptentacle.allAbis=true` to include both ABIs in a release APK for testing.
 
 ## Build
 
@@ -27,17 +29,55 @@ The embedded Tailscale bridge also needs:
 - **the NDK**: `sdkmanager "ndk;29.0.14206865"` (any recent NDK works; the
   newest `<sdk>/ndk/<version>` is used unless `ANDROID_NDK_HOME` is set).
 
-`:app:buildTsbridge` (a `preBuild` dependency) runs `gomobile bind` into
-`app/build/tsbridge/tsbridge.aar` only when it is missing or the Go sources,
-`go.mod`/`go.sum` or build tags changed, and fails with a clear message when a
-tool is missing. Go modules download on the first build (set `GOPROXY` if
-needed). The bridge is built with `ts_omit_*` tags for features it does not
-use (including the log uploader), stripped, with 16 KB page alignment. Its own
-tests run with `cd tsbridge && go test ./...`. Native libraries are stored
-compressed in the APK to keep downloads small (about 17 MB instead of 45 MB).
+Gradle builds the bridge only for the target set required by each build type:
+
+- `:app:buildTsbridgeArm64` runs `gomobile bind -target=android/arm64` into
+  `app/build/tsbridge/arm64/tsbridge.aar` for a normal release.
+- `:app:buildTsbridgeAll` runs with `-target=android/arm64,android/amd64` into
+  `app/build/tsbridge/all/tsbridge.aar` for debug and all-ABI release builds.
+
+Each AAR has its own task inputs and up-to-date checks for the target set,
+Go sources, `go.mod`/`go.sum`, feature tags and Tailscale version stamps.
+Build-type dependencies select the AAR; NDK ABI filters also constrain APK
+packaging. A debug build does not require the arm64-only AAR, and a normal
+release does not compile amd64. Missing tools produce a clear error. Go modules
+download on the first build (set `GOPROXY` if needed). The bridge is stripped,
+uses 16 KB page alignment, and native libraries are compressed inside the APK.
+
+Release builds enable R8 code optimization/obfuscation and resource shrinking
+with `proguard-android-optimize.txt` and `app/proguard-rules.pro`. The rules
+preserve the gomobile JNI runtime (`go.**`), generated bridge bindings
+(`dev.tentacle.tailnet.bridge.tsbridge.**`), and all JSch classes/members because
+JSch loads algorithms and authentication implementations by config class name.
+Only missing optional JSch integration dependencies are suppressed. AAPT supplies
+keep rules for Manifest components. Inspect `app/build/outputs/mapping/release/`
+for the R8 mapping, effective configuration and removed-code report. Kotlin
+compiler/debug metadata and unused OSGi manifests are excluded from packaging;
+third-party license and notice texts are retained, merging duplicate names.
+
+The `tsbridgeTags` list in `app/build.gradle.kts` omits features outside the
+embedded node's listener, login, status and network-change paths, including
+log upload, metrics, CLI tooling, Taildrop, routing and exit-node
+features. CLI is opt-in upstream and is never enabled here. Preserve netstack,
+NAT traversal, direct UDP, port mapping, DNS (including fallback resolution),
+health, Tailnet Lock, fallback certificate roots and DNS-cache support. Retain
+ACE, netmap caching and system proxy support for control connectivity and
+reconnect behavior. ACME and Serve remain enabled because the pinned tsnet
+version references their methods unconditionally; omitting either fails to
+compile, even though the app exposes neither feature. Standalone Android
+binary/DNS fallbacks are omitted: the app supplies interfaces/routes and
+gomobile uses Android's cgo DNS resolver.
+The app polls status, so it needs no IPN notification bus; C2N admin/debug and
+captive-portal features are also omitted. Recheck the pinned Tailscale source
+and `go run tailscale.com/cmd/featuretags --list` / `--remove=<features>` when
+changing tags or upgrading; validate dependency closure, host tests with and
+without production tags, and gomobile builds for both target sets. Bridge host
+checks are `cd tsbridge && go vet ./... && go test ./...`.
 
 ```sh
-./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
+./gradlew :app:lintDebug :app:lintRelease
+./gradlew :app:assembleRelease -Ptentacle.allAbis=true
 ./gradlew :app:assembleRelease -Ptentacle.updateRepo=<owner>/<repo>
 ```
 
