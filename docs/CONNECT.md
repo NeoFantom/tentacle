@@ -117,8 +117,10 @@ the selection for one command.
 
 On the phone, the local server, the SSH tunnel and the built-in Tailscale node
 start independently when the service starts (none waits for another). On a
-network change the tunnel reconnects at once with its backoff reset, and the
-Tailscale node is told about the new interfaces immediately.
+default network, interface or address change the tunnel coalesces brief callback
+bursts, disconnects a session whose own network was lost, and otherwise probes
+the existing SSH session before replacing it. The Tailscale node is told about
+the new interfaces immediately.
 
 ## Own server mode (SSH reverse tunnel)
 
@@ -169,10 +171,25 @@ the tunnel leg.
   host key (the SSH library does not accept an Ed25519-only server).
 - Host key: trust on first use; the fingerprint is shown and stored; a changed
   host key stops the tunnel with an error until the user re-trusts it.
-- Keepalive every 30 s; reconnect with exponential backoff (1 s … 60 s, with
-  jitter) on any failure, and immediately on network change. The status line
-  shows connected / reconnecting / error (key rejected, host key changed,
-  port in use).
+- Keepalive every 30 s; failures normally retry with exponential backoff
+  (1 s … 60 s, with jitter); the status shows connected / reconnecting / error
+  (key rejected, host key changed, port in use).
+  Network changes are coalesced for 400 ms. The app remembers the network on
+  which each session or connection attempt started. If that network is lost,
+  it immediately disconnects the old session on a best-effort basis and cancels
+  attempts. With no network it stays offline without attempting connections;
+  when a network returns it resets backoff and connects once immediately,
+  without probing the discarded session. A loss and replacement network within
+  the debounce window produce one disconnect-and-connect decision.
+  If the default changes while the session's own network remains available, or
+  that network's addresses/interface change, a 2 s `direct-tcpip` round trip to
+  server loopback port 9 probes the existing session. Losing default status
+  alone does not count as losing that network. Any reply, including
+  refusal, keeps it alive on its original network; no reply replaces it once.
+  Remote-port conflicts after the app's network-related session replacement
+  retry every 1 s for up to 30 s from the first recovery attempt while showing
+  "Connecting…", then use normal error/backoff; offline waiting does not consume
+  that grace period.
 - SSH library: a maintained pure-Java SSH client (`com.github.mwiede:jsch`), the
   one runtime dependency of the app.
 
@@ -187,6 +204,16 @@ the tunnel leg.
    ```
 
    Keep `GatewayPorts no` (the default) so the port is bound to loopback only.
+   In `sshd_config`, also consider:
+
+   ```sshdconfig
+   Match User tentacle
+       ClientAliveInterval 15
+       ClientAliveCountMax 3
+   ```
+
+   This frees the remote port in approximately 45 s when a phone disappears
+   without closing its SSH session; validate and reload sshd after editing.
 2. nginx, inside the HTTPS `server` block:
 
    ```nginx
