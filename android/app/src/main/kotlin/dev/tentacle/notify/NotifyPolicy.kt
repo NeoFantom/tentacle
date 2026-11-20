@@ -17,6 +17,8 @@ internal data class NotifyDecision(
 )
 
 internal object NotifyPolicy {
+    fun usesAppAlarm(level: String, quiet: Boolean): Boolean = level == "urgent" && !quiet
+
     fun decide(requestedLevel: String, permissions: NotifyPermissions): NotifyDecision {
         val downgraded = requestedLevel == "urgent" && !permissions.urgentAllowed
         val level = if (downgraded) "normal" else requestedLevel

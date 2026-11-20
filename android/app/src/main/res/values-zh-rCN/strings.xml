@@ -261,7 +261,7 @@
     <string name="notify_acknowledge">我知道了</string>
     <string name="notify_fix">前往设置</string>
     <string name="notify_permission_missing">通知已关闭。请允许通知，让电脑发来的消息能提醒你。</string>
-    <string name="notify_full_screen_missing">尚未允许全屏提醒。开启后，紧急提醒才能在锁屏上全屏显示；否则只会发送通知。</string>
+    <string name="notify_full_screen_missing">尚未允许全屏提醒。开启后，紧急提醒才能在锁屏上全屏显示；否则仍会发送通知并响铃和振动。</string>
     <string name="notify_normal_blocked">“电脑发来的消息”通知类别已被关闭。</string>
     <string name="notify_urgent_blocked">“电脑发来的紧急提醒”通知类别已被关闭。</string>
     <string name="notify_test_normal">测试普通通知</string>

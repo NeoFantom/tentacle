@@ -82,9 +82,12 @@ notification uses an expanded text view; tapping opens Tentacle and records
 **Allow urgent alerts** is off by default. Turning it on explains that an
 urgent alert can ring and vibrate continuously on the lock screen until
 acknowledged, for up to two minutes. Allowed urgent alerts use the **Urgent
-alerts from your computer** high-importance channel with alarm audio attributes
-and repeated vibration. Android's channel setting controls whether it may
-bypass Do Not Disturb.
+alerts from your computer** high-importance channel, which is silent and does
+not vibrate; urgent sound and repeated vibration come only from the app's own
+alarm, even without full-screen access. Owners can silence urgent alerts with
+the app's **Allow urgent alerts** switch or the alarm volume (volume zero keeps
+vibration); silent and vibrate ringer modes do not mute alarm audio. Android's
+channel setting controls whether it may bypass Do Not Disturb.
 
 An urgent alert can open a full-screen lock-screen activity with one large
 **Acknowledge** button. The notification also has an **Acknowledge** action.
@@ -92,7 +95,8 @@ Either action stops sound and vibration and records acknowledgement. Sound and
 vibration also stop if the activity is destroyed or after two minutes; the
 notification remains available and its state remains `shown`. On Android 14
 and newer, Tentacle shows a settings shortcut when full-screen intent access is
-missing. It still posts the urgent heads-up notification with alarm sound.
+missing. It still posts the urgent heads-up notification while the app's own
+alarm rings and vibrates.
 
 The settings screen reports missing notification permission, blocked channels
 and missing full-screen access with a shortcut to the relevant system setting.

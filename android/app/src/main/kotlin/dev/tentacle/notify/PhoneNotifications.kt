@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.net.Uri
@@ -32,7 +33,7 @@ import dev.tentacle.core.Redactor
 /** Framework delivery boundary. All alarm resources and callbacks are owned by the main thread. */
 object PhoneNotifications {
     const val NORMAL_CHANNEL = "computer_messages"
-    const val URGENT_CHANNEL = "computer_urgent"
+    const val URGENT_CHANNEL = UrgentChannel.ID
     const val EXTRA_ID = "notify_id"
     const val ACTION_ACK = "dev.tentacle.notify.ACK"
     const val ACTION_DISMISS = "dev.tentacle.notify.DISMISS"
@@ -83,11 +84,12 @@ object PhoneNotifications {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(NORMAL_CHANNEL,
             localized.getString(R.string.notify_channel), NotificationManager.IMPORTANCE_DEFAULT))
+        manager.deleteNotificationChannel(UrgentChannel.REPLACED_ID)
         manager.createNotificationChannel(NotificationChannel(URGENT_CHANNEL,
-            localized.getString(R.string.notify_urgent_channel), NotificationManager.IMPORTANCE_HIGH).apply {
-            setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM), alarmAttributes())
-            enableVibration(true)
-            vibrationPattern = longArrayOf(0, 700, 400, 700, 400)
+            localized.getString(R.string.notify_urgent_channel), UrgentChannel.IMPORTANCE).apply {
+            setSound(UrgentChannel.sound, null)
+            enableVibration(UrgentChannel.VIBRATION_ENABLED)
+            lockscreenVisibility = UrgentChannel.LOCKSCREEN_VISIBILITY
             // Do not request or force DND bypass. The owner controls the channel.
         })
     }
@@ -106,7 +108,7 @@ object PhoneNotifications {
 
     private fun post(context: Context, message: NotifyMessage, delivery: NotifyDelivery, quiet: Boolean = false) {
         val localized = AppLanguage.wrap(context)
-        val urgent = delivery.level == "urgent" && !quiet
+        val urgent = NotifyPolicy.usesAppAlarm(delivery.level, quiet)
         val tap = PendingIntent.getActivity(context, 0,
             Intent(context, NotificationOpenActivity::class.java).setData(uri(message.id, "tap"))
                 .putExtra(EXTRA_ID, message.id),
@@ -139,10 +141,8 @@ object PhoneNotifications {
                 val entry = runCatching { get(context).get(message.id) }.getOrNull()
                 if (entry?.state != "shown") return@post
                 timeouts.arm(message.id) { stopAlarm(context, message.id, quiet = true) }
-                // An unlocked phone may show heads-up instead of launching the full-screen activity.
-                // Keep the alarm continuous in that case too. Without full-screen approval, use
-                // only the system's heads-up sound, as reported in the delivery response.
-                if (permissions(context).fullScreenAllowed) startAlarm(context, message.id)
+                // The app owns alarm audio and vibration, with or without full-screen access.
+                startAlarm(context, message.id)
             }
         }
     }
@@ -179,16 +179,26 @@ object PhoneNotifications {
                 // Keep the two-minute stop timer running even when the screen goes back to sleep.
                 acquire(deadlines.remaining(id).coerceAtLeast(1))
             }
-        val channel = context.getSystemService(NotificationManager::class.java).getNotificationChannel(URGENT_CHANNEL)
-        // Respect the owner's sound and vibration choices for the channel.
-        channel?.sound?.let { sound ->
+        val alarmVolume = context.getSystemService(AudioManager::class.java).getStreamVolume(AudioManager.STREAM_ALARM)
+        val sound = if (UrgentAlarm.shouldPlaySound(alarmVolume)) UrgentAlarm.sound(
+            alarm = { RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM) },
+            notification = { RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) },
+            ringtone = { RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE) },
+        ) else null
+        sound?.let {
             val media = MediaPlayer()
             player = media
             try {
                 media.setAudioAttributes(alarmAttributes())
                 media.setDataSource(context, sound)
                 media.isLooping = true
-                media.setOnErrorListener { _, _, _ -> stopAlarm(context, id, quiet = true); true }
+                media.setOnErrorListener { failed, _, _ ->
+                    // Audio failure must not cancel vibration or the remaining alarm budget.
+                    failed.release()
+                    if (player === failed) player = null
+                    AppLog.append("notify alarm audio unavailable")
+                    true
+                }
                 media.prepare()
                 media.start()
             } catch (_: Exception) {
@@ -197,12 +207,10 @@ object PhoneNotifications {
                 AppLog.append("notify alarm audio unavailable")
             }
         }
-        if (channel?.shouldVibrate() == true) {
-            @Suppress("DEPRECATION")
-            val motor = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-            vibrator = motor
-            runCatching { motor.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 700, 400, 700, 400), 0), alarmAttributes()) }
-        }
+        @Suppress("DEPRECATION")
+        val motor = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        vibrator = motor
+        runCatching { motor.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 700, 400, 700, 400), 0), alarmAttributes()) }
     }
 
     internal fun stopAlarm(context: Context, id: String, quiet: Boolean) {
@@ -219,8 +227,7 @@ object PhoneNotifications {
         if (quiet) {
             val entry = runCatching { get(context).get(id) }.getOrNull()
             if (entry?.state == "shown") runCatching {
-                // Replace, don't update: an updated record keeps playing the urgent channel's alarm
-                // sound in the system. Cancelling by the app does not fire the dismiss intent.
+                // Replace with a quiet normal notification. App cancellation does not fire the dismiss intent.
                 context.getSystemService(NotificationManager::class.java).cancel(id, NOTIFICATION_ID)
                 post(context, entry.message, entry.delivery, quiet = true)
             }
