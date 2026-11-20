@@ -61,8 +61,9 @@ Test vectors used by both implementations: `docs/request-length-vectors.json`.
 | `POST /v1/requests/<id>` | `{"status": "working"\|"done"\|"failed"\|"new", "message": "…"}` (JSON, ≤ 16 KiB) | The updated Request. `404 not_found` for an unknown id, `400 bad_request` for an invalid status/message/body, `409 conflict` for a transition that is not allowed. |
 | `GET /v1/requests/<id>/log` | — | The attached log snapshot, `text/plain; charset=utf-8`; `404 not_found` if none. |
 
-This is the only write in the API, and it only changes a request's status and
-message. File access stays read-only.
+This write changes only a request's status and message. The separate
+`POST /v1/notify` write asks the phone to display a notification; file access
+stays read-only. See [NOTIFY.md](NOTIFY.md).
 
 ## App log
 

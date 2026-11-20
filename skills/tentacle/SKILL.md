@@ -1,17 +1,46 @@
 ---
 name: tentacle
-description: Browse and fetch files on the user's Android phone, transcribe call recordings, and receive verification codes on demand with the local Tentacle CLI. Use for phone photos, downloads, documents, recordings, verification codes, or questions such as "what did X say on the call?".
+description: Browse and fetch files on the user's Android phone, transcribe call recordings, receive verification codes, and notify the phone owner on demand with the local Tentacle CLI. Use for phone photos, downloads, documents, recordings, verification codes, phone-owner notifications, or questions such as "what did X say on the call?".
 ---
 
 # Tentacle
 
 Use `tentacle` to access the phone's read-only file API, short-lived
-verification-code feed and local transcription cache. Phone paths can be
+verification-code feed, phone-owner notifications and local transcription cache. Phone paths can be
 relative to shared storage (`Download`, `DCIM/Camera`)
 or absolute (`/storage/emulated/0/...`). Configuration is discoverable through
 `tentacle config path` and `tentacle config show` (secrets masked).
 Run `tentacle requests list` to see what the phone owner has asked the computer
 to change; do not start the watcher or act on a request unless explicitly asked.
+
+## Notify the phone owner
+
+Use a normal notification when a long task finishes, when work needs the
+owner's decision, or when work is blocked and the owner is unlikely to be
+watching the computer:
+
+```text
+tentacle notify 'Short message for the owner'
+```
+
+Keep the title and text short and send one useful update rather than repeated
+progress messages. The phone rate-limits both normal and urgent notifications.
+If the command reports `not shown`, relay the reason in the current output when
+the owner next sees it; do not retry repeatedly.
+
+Use `--urgent` only when the owner explicitly asked to be woken or alerted for
+this particular event. General permission in the app is necessary but does not
+replace that event-specific request. If urgent alerts are off, Tentacle sends a
+normal notification and reports the downgrade. If full-screen alerts are not
+allowed, it still sends a high-priority notification and reports that limit.
+
+Use `--wait-ack` only when work cannot safely continue until the owner has seen
+the message. It waits 300 seconds by default; provide seconds to choose another
+timeout. Acknowledged and dismissed both confirm that the owner handled the
+notification. A timeout exits 1 and should be reported as no response, not
+treated as approval. Without `--wait-ack`, `--json` prints one delivery object;
+with both options, it prints JSON Lines containing delivery and then the
+terminal response when received.
 
 ## Verification codes
 

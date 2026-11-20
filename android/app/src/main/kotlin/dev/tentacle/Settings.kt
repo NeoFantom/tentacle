@@ -36,6 +36,13 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("codes_notifications", false)
         set(value) { prefs.edit().putBoolean("codes_notifications", value).apply() }
 
+    var urgentAllowed: Boolean
+        get() = prefs.getBoolean("urgent_allowed", false)
+        set(value) {
+            prefs.edit().putBoolean("urgent_allowed", value).apply()
+            if (!value) dev.tentacle.notify.PhoneNotifications.stopAlarms(contextForCodes)
+        }
+
     var startOnBoot: Boolean
         get() = prefs.getBoolean("start_on_boot", prefs.getBoolean("started_once", false))
         set(value) { prefs.edit().putBoolean("start_on_boot", value).apply() }

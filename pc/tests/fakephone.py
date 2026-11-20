@@ -54,6 +54,10 @@ class _Server(ThreadingHTTPServer):
         codes_enabled: bool,
         code_condition: threading.Condition,
         code_queries: list[tuple[int | None, int]],
+        notifications: dict[str, dict[str, object]],
+        notify_requests: list[dict[str, object]],
+        notify_condition: threading.Condition,
+        notify_options: dict[str, object],
     ):
         self.root = root.resolve(strict=True)
         self.token = token
@@ -69,6 +73,10 @@ class _Server(ThreadingHTTPServer):
         self.codes_enabled = codes_enabled
         self.code_condition = code_condition
         self.code_queries = code_queries
+        self.notifications = notifications
+        self.notify_requests = notify_requests
+        self.notify_condition = notify_condition
+        self.notify_options = notify_options
         super().__init__(address, _Handler)
 
 
@@ -140,6 +148,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._requests(query)
             elif parsed.path == "/v1/codes":
                 self._codes(query)
+            elif re.fullmatch(r"/v1/notify/[A-Za-z0-9_-]{1,64}", parsed.path):
+                self._notification(parsed.path.split("/")[-1], query)
             elif re.fullmatch(r"/v1/requests/[A-Za-z0-9_-]{1,64}/log", parsed.path):
                 self._request_log(parsed.path.split("/")[-2], query)
             else:
@@ -158,10 +168,13 @@ class _Handler(BaseHTTPRequestHandler):
             parsed = urlsplit(self.path)
             query = parse_qs(parsed.query, keep_blank_values=True)
             self._require_no_unknown(query, set())
-            match = re.fullmatch(r"/v1/requests/([A-Za-z0-9_-]{1,64})", parsed.path)
-            if match is None:
-                raise _ApiError(404, "not_found", "Endpoint not found")
-            self._update_request(match.group(1))
+            if parsed.path == "/v1/notify":
+                self._notify()
+            else:
+                match = re.fullmatch(r"/v1/requests/([A-Za-z0-9_-]{1,64})", parsed.path)
+                if match is None:
+                    raise _ApiError(404, "not_found", "Endpoint not found")
+                self._update_request(match.group(1))
         except _ApiError as exc:
             self._send_error(exc.status, exc.code, exc.message)
         except (BrokenPipeError, ConnectionResetError):
@@ -455,6 +468,86 @@ class _Handler(BaseHTTPRequestHandler):
         now_ms = time.time_ns() // 1_000_000 + int(self.server.clock_offset_s * 1000)
         self._send_json(200, {"codes": codes, "now_ms": now_ms, "enabled": enabled})
 
+    def _notification(self, notification_id: str, query: dict[str, list[str]]) -> None:
+        self._require_no_unknown(query, {"wait"})
+        wait_s = self._int(query, "wait", 0, minimum=0, maximum=60)
+        assert wait_s is not None
+        deadline = time.monotonic() + wait_s
+        with self.server.notify_condition:
+            item = self.server.notifications.get(notification_id)
+            if item is None:
+                raise _ApiError(404, "not_found", "Notification not found")
+            while wait_s and item["state"] == "shown":
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.server.notify_condition.wait(remaining)
+            reply = {
+                "id": item["id"], "level": item["level"], "state": item["state"],
+            }
+            if "acknowledged_ms" in item:
+                reply["acknowledged_ms"] = item["acknowledged_ms"]
+        self._send_json(200, reply)
+
+    def _notify(self) -> None:
+        raw_length = self.headers.get("Content-Length", "")
+        if not raw_length.isdigit():
+            raise _ApiError(400, "bad_request", "Content-Length is required")
+        length = int(raw_length)
+        if length > 16 * 1024:
+            raise _ApiError(400, "bad_request", "Request body is too large")
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise _ApiError(400, "bad_request", "Body must be valid JSON") from None
+        if not isinstance(body, dict):
+            raise _ApiError(400, "bad_request", "Body must be an object")
+        notification_id = body.get("id")
+        text = body.get("text")
+        title = body.get("title")
+        level = body.get("level", "normal")
+        if (set(body) - {"id", "text", "title", "level"}
+                or not isinstance(notification_id, str)
+                or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", notification_id) is None
+                or not isinstance(text, str) or not 1 <= len(text) <= 1000
+                or (title is not None and (not isinstance(title, str) or len(title) > 100))
+                or level not in {"normal", "urgent"}):
+            raise _ApiError(400, "bad_request", "Invalid notification")
+        with self.server.notify_condition:
+            existing = self.server.notifications.get(notification_id)
+            canonical = {"id": notification_id, "text": text, "title": title, "level": level}
+            if existing is not None:
+                if existing["request"] != canonical:
+                    raise _ApiError(409, "conflict", "Notification ID has different content")
+                reply = dict(existing["delivery"])
+            else:
+                if self.server.notify_options["rate_limited"]:
+                    raise _ApiError(429, "rate_limited", "Notification rate limit exceeded")
+                actual_level = level
+                downgraded = False
+                reason = None
+                shown = bool(self.server.notify_options["shown"])
+                if level == "urgent" and not self.server.notify_options["urgent_allowed"]:
+                    actual_level = "normal"
+                    downgraded = True
+                    reason = "urgent_not_allowed"
+                elif level == "urgent" and not self.server.notify_options["full_screen_allowed"]:
+                    reason = "full_screen_not_allowed"
+                if not shown:
+                    reason = str(self.server.notify_options["not_shown_reason"])
+                reply = {
+                    "id": notification_id, "level": actual_level,
+                    "downgraded": downgraded, "shown": shown,
+                }
+                if reason is not None:
+                    reply["reason"] = reason
+                self.server.notifications[notification_id] = {
+                    "id": notification_id, "level": actual_level, "state": "shown",
+                    "request": canonical, "delivery": dict(reply),
+                }
+                self.server.notify_requests.append(dict(body))
+        self._send_json(200, reply)
+
     def _update_request(self, request_id: str) -> None:
         raw_length = self.headers.get("Content-Length", "")
         if not raw_length.isdigit():
@@ -614,6 +707,10 @@ class FakePhone:
         clock_offset_s: float = 0,
         app: str = "tentacle",
         codes_enabled: bool = True,
+        notify_urgent_allowed: bool = False,
+        notify_full_screen_allowed: bool = True,
+        notify_shown: bool = True,
+        notify_not_shown_reason: str = "notifications_disabled",
     ):
         self.root_dir = Path(root_dir)
         self.token = token
@@ -632,6 +729,16 @@ class FakePhone:
         self._code_condition = threading.Condition()
         self._next_code = 1
         self.code_queries: list[tuple[int | None, int]] = []
+        self._notifications: dict[str, dict[str, object]] = {}
+        self.notify_requests: list[dict[str, object]] = []
+        self._notify_condition = threading.Condition()
+        self.notify_options: dict[str, object] = {
+            "urgent_allowed": notify_urgent_allowed,
+            "full_screen_allowed": notify_full_screen_allowed,
+            "shown": notify_shown,
+            "not_shown_reason": notify_not_shown_reason,
+            "rate_limited": False,
+        }
         self._server: _Server | None = None
         self._thread: threading.Thread | None = None
 
@@ -707,6 +814,21 @@ class FakePhone:
                 self._server.codes_enabled = enabled
             self._code_condition.notify_all()
 
+    def set_notify_rate_limited(self, limited: bool) -> None:
+        self.notify_options["rate_limited"] = limited
+
+    def set_notification_state(self, notification_id: str, state: str) -> None:
+        if state not in {"shown", "acknowledged", "dismissed", "expired"}:
+            raise ValueError("invalid notification state")
+        with self._notify_condition:
+            item = self._notifications.get(notification_id)
+            if item is None:
+                raise KeyError(notification_id)
+            item["state"] = state
+            if state == "acknowledged":
+                item["acknowledged_ms"] = time.time_ns() // 1_000_000
+            self._notify_condition.notify_all()
+
     def start(self) -> "FakePhone":
         if self._server is not None:
             return self
@@ -719,6 +841,8 @@ class FakePhone:
             self._request_condition, self.claim_conflicts,
             self._codes, self.codes_enabled, self._code_condition,
             self.code_queries,
+            self._notifications, self.notify_requests, self._notify_condition,
+            self.notify_options,
         )
         host, port = self._server.server_address[:2]
         self.url = f"http://{host}:{port}"

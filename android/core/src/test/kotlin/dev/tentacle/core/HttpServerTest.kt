@@ -26,6 +26,7 @@ class HttpServerTest {
     private lateinit var server: HttpServer
     private lateinit var requests: RequestStore
     private lateinit var codes: CodeStore
+    private lateinit var notifications: NotifyStore
     private val loopback: String = InetAddress.getLoopbackAddress().hostAddress
     private var token = "test-token"
 
@@ -34,6 +35,10 @@ class HttpServerTest {
         root = Files.createDirectory(tempDir.resolve("primary"))
         requests = RequestStore(tempDir.resolve("requests").toFile())
         codes = CodeStore()
+        notifications = NotifyStore(
+            prepare = { NotifyDelivery(it.requestedLevel) },
+            deliver = { _, delivery -> delivery },
+        )
         server = HttpServer(
             port = 0,
             bind = loopback,
@@ -41,6 +46,7 @@ class HttpServerTest {
             api = FileApi(listOf(StorageRoot("primary", root.toFile(), "Internal"))),
             requestStore = requests,
             codeStore = codes,
+            notifyStore = notifications,
             info = {
                 PingInfo(
                     version = "0.1.0-test",
@@ -592,6 +598,96 @@ class HttpServerTest {
             requests.create("feature", "Release waiter")
             assertEquals(200, codePoll.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
             assertEquals(200, requestPoll.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
+        } finally { pool.shutdownNow() }
+    }
+
+    @Test
+    fun `notify post validates input rate limits and preserves idempotency`() {
+        assertEquals(401, request("POST", "/v1/notify", authenticate = false,
+            body = "{\"text\":\"secret\"}").status)
+        val first = request("POST", "/v1/notify", body =
+            "{\"title\":\"Build\",\"text\":\"Finished\",\"id\":\"same_id\"}")
+        assertEquals(200, first.status)
+        val body = Json.parse(first.text) as Map<*, *>
+        assertEquals("same_id", body["id"])
+        assertEquals("normal", body["level"])
+        assertEquals(false, body["downgraded"])
+        assertEquals(true, body["shown"])
+        assertEquals(first.text, request("POST", "/v1/notify", body =
+            "{\"title\":\"Build\",\"text\":\"Finished\",\"id\":\"same_id\"}").text)
+        assertEquals(409, request("POST", "/v1/notify", body =
+            "{\"title\":\"Build\",\"text\":\"Changed\",\"id\":\"same_id\"}").status)
+
+        listOf(
+            "{}", "[]", "{", "{\"text\":null}", "{\"text\":42}",
+            "{\"text\":\"\"}", "{\"text\":\"bad\\ttext\"}",
+            "{\"text\":\"text\",\"title\":null}",
+            "{\"text\":\"text\",\"title\":42}",
+            "{\"text\":\"text\",\"title\":\"bad\\u007f title\"}",
+            "{\"text\":\"text\",\"title\":\"bad\\u0085 title\"}",
+            "{\"text\":\"text\",\"level\":42}",
+            "{\"text\":\"text\",\"level\":null}",
+            "{\"text\":\"text\",\"id\":false}",
+            "{\"text\":\"text\",\"id\":null}",
+            "{\"text\":\"text\",\"level\":\"other\"}",
+            "{\"text\":\"bad\\u007f text\"}",
+            "{\"text\":\"bad\\u0085 text\"}",
+        ).forEach { invalid ->
+            assertEquals(400, request("POST", "/v1/notify", body = invalid).status, invalid)
+        }
+
+        // The idempotent first delivery consumed one normal slot.
+        repeat(9) { index ->
+            assertEquals(200, request("POST", "/v1/notify", body =
+                "{\"text\":\"message $index\",\"id\":\"rate_$index\"}").status)
+        }
+        val limited = request("POST", "/v1/notify", body =
+            "{\"text\":\"too many\",\"id\":\"rate_last\"}")
+        assertEquals(429, limited.status)
+        assertEquals("rate_limited", (Json.parse(limited.text) as Map<*, *>)["error"])
+    }
+
+    @Test
+    fun `notify status long poll wakes on acknowledgement`() {
+        assertEquals(200, request("POST", "/v1/notify", body =
+            "{\"text\":\"Please respond\",\"level\":\"urgent\",\"id\":\"waiting\"}").status)
+        assertEquals(401, request("GET", "/v1/notify/waiting", authenticate = false).status)
+        assertEquals(404, request("GET", "/v1/notify/missing").status)
+        listOf("-1", "61", "oops").forEach { wait ->
+            assertEquals(400, request("GET", "/v1/notify/waiting?wait=$wait").status)
+        }
+
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val pending = pool.submit<HttpResponse> { request("GET", "/v1/notify/waiting?wait=3") }
+            Thread.sleep(100)
+            assertFalse(pending.isDone)
+            notifications.transition("waiting", "acknowledged")
+            val response = Json.parse(pending.get(1, java.util.concurrent.TimeUnit.SECONDS).text) as Map<*, *>
+            assertEquals("urgent", response["level"])
+            assertEquals("acknowledged", response["state"])
+            assertTrue((response["acknowledged_ms"] as Number).toLong() > 0)
+        } finally { pool.shutdownNow() }
+    }
+
+    @Test
+    fun `notify polls share the long poll cap with codes and requests`() {
+        codes.setEnabled(true)
+        assertEquals(200, request("POST", "/v1/notify", body =
+            "{\"text\":\"Wait for me\",\"id\":\"cap_wait\"}").status)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+        try {
+            val since = System.currentTimeMillis()
+            val codePoll = pool.submit<HttpResponse> { request("GET", "/v1/codes?since=$since&wait=3") }
+            val notifyPoll = pool.submit<HttpResponse> { request("GET", "/v1/notify/cap_wait?wait=3") }
+            Thread.sleep(100)
+            val extra = pool.submit<HttpResponse> { request("GET", "/v1/requests?wait=3") }
+            assertEquals(200, extra.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
+            assertEquals(200, request("GET", "/v1/ls").status)
+            codes.capture("code 665544", "Service", "notification")
+            notifications.transition("cap_wait", "dismissed")
+            assertEquals(200, codePoll.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
+            assertEquals(200, notifyPoll.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
         } finally { pool.shutdownNow() }
     }
 

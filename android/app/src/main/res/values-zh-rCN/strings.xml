@@ -253,4 +253,22 @@
     <string name="codes_needs_sms">需要短信权限</string>
     <string name="codes_waiting">等待验证码</string>
     <string name="codes_last">最近收到来自%1$s的验证码，%2$s前</string>
+    <string name="notify_channel">电脑发来的消息</string>
+    <string name="notify_urgent_channel">电脑发来的紧急提醒</string>
+    <string name="notify_section">电脑消息通知</string>
+    <string name="notify_allow_urgent">允许紧急提醒</string>
+    <string name="notify_urgent_warning">紧急提醒会持续响铃和振动，锁屏时也一样，直到你点“我知道了”（最长 2 分钟）。只有在你希望电脑能够叫醒你时，才开启此功能。</string>
+    <string name="notify_acknowledge">我知道了</string>
+    <string name="notify_fix">前往设置</string>
+    <string name="notify_permission_missing">通知已关闭。请允许通知，让电脑发来的消息能提醒你。</string>
+    <string name="notify_full_screen_missing">尚未允许全屏提醒。开启后，紧急提醒才能在锁屏上全屏显示；否则只会发送通知。</string>
+    <string name="notify_normal_blocked">“电脑发来的消息”通知类别已被关闭。</string>
+    <string name="notify_urgent_blocked">“电脑发来的紧急提醒”通知类别已被关闭。</string>
+    <string name="notify_test_normal">测试普通通知</string>
+    <string name="notify_test_urgent">测试紧急提醒</string>
+    <string name="notify_test_text">这是一条 Tentacle 测试消息。</string>
+    <string name="notify_test_delivered">测试通知已发送</string>
+    <string name="notify_test_not_shown">测试通知未显示，请检查通知权限及通知类别设置。</string>
+    <string name="notify_test_no_full_screen">测试通知已发送，但尚未允许全屏提醒。</string>
+    <string name="notify_test_failed">测试通知发送失败，请稍后重试。测试通知也有发送频率限制。</string>
 </resources>

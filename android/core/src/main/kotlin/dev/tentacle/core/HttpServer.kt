@@ -31,6 +31,7 @@ class HttpServer(
     private val info: () -> PingInfo,
     private val requestStore: RequestStore? = null,
     private val codeStore: CodeStore? = null,
+    private val notifyStore: NotifyStore? = null,
 ) {
     @Volatile var logger: (String) -> Unit = {}
     @Volatile var accessLogger: (String, String, Int, Long, Long) -> Unit = { _, _, _, _, _ -> }
@@ -137,22 +138,52 @@ class HttpServer(
                 authenticate(request.headers["authorization"])
                 val updateId = REQUEST_UPDATE.matchEntire(route)?.groupValues?.get(1)
                 val logId = REQUEST_LOG.matchEntire(route)?.groupValues?.get(1)
+                val notifyId = NOTIFY_ITEM.matchEntire(route)?.groupValues?.get(1)
                 if (request.method != "GET" && !(head && route == "/v1/file") &&
-                    !(request.method == "POST" && updateId != null)) {
+                    !(request.method == "POST" && (updateId != null || route == "/v1/notify"))) {
                     throw ApiException(405, "method_not_allowed", "Method is not allowed", mapOf(
                         "Allow" to when {
                             route == "/v1/file" -> "GET, HEAD"
-                            updateId != null -> "POST"
+                            updateId != null || route == "/v1/notify" -> "POST"
                             else -> "GET"
                         },
                     ))
                 }
-                if ((route !in setOf("/v1/ping", "/v1/ls", "/v1/stat", "/v1/find", "/v1/file", "/v1/requests", "/v1/codes") &&
-                    updateId == null && logId == null) || (updateId != null && request.method != "POST")) {
+                if (route == "/v1/notify" && request.method != "POST") {
+                    throw ApiException(405, "method_not_allowed", "Method is not allowed", mapOf("Allow" to "POST"))
+                }
+                if ((route !in setOf("/v1/ping", "/v1/ls", "/v1/stat", "/v1/find", "/v1/file", "/v1/requests", "/v1/codes", "/v1/notify") &&
+                    updateId == null && logId == null && notifyId == null) ||
+                    (updateId != null && request.method != "POST")) {
                     throw ApiException(404, "not_found")
                 }
                 val query = parseQuery(request.target.substringAfter('?', ""))
-                if (route == "/v1/codes") {
+                if (route == "/v1/notify" || notifyId != null) {
+                    val store = notifyStore ?: throw ApiException(404, "not_found")
+                    val result = if (route == "/v1/notify") {
+                        val body = readJsonBody(input, request.headers) as? Map<*, *>
+                            ?: throw ApiException(400, "bad_request", "Expected a JSON object")
+                        val text = body["text"] as? String
+                            ?: throw ApiException(400, "bad_request", "Provide notification text")
+                        val title = body.optionalString("title")
+                        val level = body.optionalString("level")
+                        val id = body.optionalString("id")
+                        store.post(title, text, level, id).postJson()
+                    } else {
+                        val wait = query.integer("wait", 0)
+                        if (wait !in 0..60) {
+                            throw ApiException(400, "bad_request", "Wait must be between 0 and 60 seconds")
+                        }
+                        val entry = store.get(notifyId!!)
+                        if (wait > 0 && entry.state == "shown" && longPollSlots.tryAcquire()) {
+                            try { store.awaitChange(notifyId, wait * 1000L) } finally { longPollSlots.release() }
+                        } else {
+                            entry
+                        }.stateJson()
+                    }
+                    committed = true
+                    writeJson(output, 200, Json.stringify(result).toByteArray(Charsets.UTF_8), false)
+                } else if (route == "/v1/codes") {
                     val store = codeStore ?: throw ApiException(404, "not_found")
                     val since = query.number("since") ?: 0L
                     if (since < 0) throw ApiException(400, "bad_request", "Since must not be negative")
@@ -397,6 +428,11 @@ class HttpServer(
         it.toIntOrNull() ?: throw ApiException(400, "bad_request", "Invalid $key")
     } ?: default
 
+    private fun Map<*, *>.optionalString(key: String): String? {
+        if (!containsKey(key)) return null
+        return this[key] as? String ?: throw ApiException(400, "bad_request", "$key must be a string")
+    }
+
     private fun writeError(output: OutputStream, error: ApiException, head: Boolean) {
         val body = Json.stringify(linkedMapOf("error" to error.code, "message" to error.message)).toByteArray(Charsets.UTF_8)
         writeJson(output, error.status, body, head, error.headers)
@@ -425,6 +461,7 @@ class HttpServer(
             411 -> "Length Required"
             413 -> "Payload Too Large"
             416 -> "Range Not Satisfiable"
+            429 -> "Too Many Requests"
             431 -> "Request Header Fields Too Large"
             else -> "Internal Server Error"
         }
@@ -468,6 +505,7 @@ class HttpServer(
     private companion object {
         val REQUEST_UPDATE = Regex("/v1/requests/([A-Za-z0-9_-]{1,64})")
         val REQUEST_LOG = Regex("/v1/requests/([A-Za-z0-9_-]{1,64})/log")
+        val NOTIFY_ITEM = Regex("/v1/notify/([A-Za-z0-9_-]{1,64})")
         val TOKEN = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
     }
 }

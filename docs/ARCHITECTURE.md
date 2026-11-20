@@ -6,10 +6,11 @@ Change an affected contract here before changing an implementation.
 ## 1. Scope
 
 Tentacle is a manual toolkit for a human or local agent to browse Android shared
-storage, pull call recordings, transcribe audio locally on demand, and receive
-short-lived verification codes when the phone owner enables that feature. The
-phone serves an HTTP API with read-only file access, request status updates and
-an in-memory verification-code feed.
+storage, pull call recordings, transcribe audio locally on demand, receive
+short-lived verification codes when the phone owner enables that feature, and
+send a notification from the paired computer to the phone owner. The phone
+serves an HTTP API with read-only file access, request status updates, an
+in-memory verification-code feed and an in-memory notification-status feed.
 File commands do their work and exit; there is no background file analysis,
 project filing or file-processing task queue. The optional `requests watch`
 process stays running to handle changes requested in the app, as specified
@@ -23,16 +24,16 @@ Tailscale node, are documented in [CONNECT.md](CONNECT.md).
 
 | Component | Responsibility |
 |---|---|
-| `android/:core`, `dev.tentacle.core` | Storage roots, confined file access, verification-code parsing and in-memory storage, HTTP API and token authentication; pure Kotlin/JVM. |
-| `android/:app`, `dev.tentacle` | Foreground service, notification/SMS code capture, permission guidance, settings, pairing and live service status. |
+| `android/:core`, `dev.tentacle.core` | Storage roots, confined file access, verification-code parsing and in-memory storage, outbound-notification validation/rate limiting/state, HTTP API and token authentication; pure Kotlin/JVM. |
+| `android/:app`, `dev.tentacle` | Foreground service, notification delivery and acknowledgement, notification/SMS code capture, permission guidance, settings, pairing and live service status. |
 | `android/tsbridge` (Go, `tsbridge`) | Embedded userspace Tailscale node (`tailscale.com/tsnet`) bound with gomobile into an AAR for `:app` (`dev.tentacle.tailnet`). |
 | `pc/src/tentacle/config.py` | All PC settings, loading and masked display. |
-| `phone.py`, `phone_cli.py`, `codes_cmd.py` | HTTP client, resumable transfers, file commands, verification-code waiting, discovery and diagnostics. |
+| `phone.py`, `phone_cli.py`, `codes_cmd.py`, `notify_cmd.py` | HTTP client, resumable transfers, file commands, verification-code waiting, phone-owner notification, discovery and diagnostics. |
 | `paths.py` | Choosing among the phone's candidate base URLs (probe, tailnet-direct check, short cache). |
 | `calls.py` | Recording metadata, manual listing/pulling and content-addressed transcription cache. |
 | `asr/` | Local ASR backends, transcript validation and rendering. |
 | `timeutil.py` | Shared time parsing and conversion. |
-| `skills/tentacle/SKILL.md` | Agent workflow for phone files, calls and verification codes. |
+| `skills/tentacle/SKILL.md` | Agent workflow for phone files, calls, verification codes and notifying the phone owner. |
 
 The PC core uses Python ≥ 3.11 standard library only. Optional ASR libraries are
 lazy imports declared as package extras. Android uses Kotlin;
@@ -56,12 +57,12 @@ file access remains read-only.
 - Errors: `{"error": "<code>", "message": "<human text>"}` with status
   400 `bad_request` / 401 `unauthorized` / 403 `forbidden` (outside roots or no
   permission) / 404 `not_found` / 409 `conflict` / 411 `bad_request` (missing
-  Content-Length) / 413 `bad_request` (body too large) /
+  Content-Length) / 413 `bad_request` (body too large) / 429 `rate_limited` /
   416 `range_not_satisfiable` / 500 `internal`.
-- Files are read-only: `GET` (and `HEAD` for `/v1/file`). The only write is
-  `POST /v1/requests/<id>`, which updates a request status and message. Other
-  methods → 405. Request contracts, validation limits and transitions are in
-  [REQUESTS.md](REQUESTS.md).
+- File access is read-only: `GET` (and `HEAD` for `/v1/file`). API writes are
+  limited to updating an app request through `POST /v1/requests/<id>` and
+  asking the phone to display a notification through `POST /v1/notify`. Other
+  methods → 405. See [REQUESTS.md](REQUESTS.md) and [NOTIFY.md](NOTIFY.md).
 
 ### Paths
 
@@ -96,6 +97,8 @@ file access remains read-only.
 | `GET /v1/requests` | `wait=0..60` seconds | Newest-first requests and `now_ms`; optional long-poll for a `new` request, recording the last poll time. See [REQUESTS.md](REQUESTS.md). |
 | `POST /v1/requests/<id>` | JSON status and message, ≤ 16 KiB | Updated Request; invalid input → 400, unknown id → 404, disallowed transition → 409. See [REQUESTS.md](REQUESTS.md). |
 | `GET /v1/requests/<id>/log` | — | Attached snapshot as `text/plain; charset=utf-8`, or 404. See [REQUESTS.md](REQUESTS.md). |
+| `POST /v1/notify` | JSON body, ≤ 16 KiB | Accepts `{"title"?: string, "text": string, "level"?: "normal"\|"urgent", "id"?: string}` and returns `{"id", "level", "downgraded", "reason"?, "shown"}`. `title` is at most 100 characters, `text` is 1–1000 characters, and `id` is 1–64 characters of `[A-Za-z0-9_-]`; the phone generates an id when absent. `level` defaults to `normal`. Control characters except newline are invalid. Reusing an id with identical content returns the original result; different content returns 409. See [NOTIFY.md](NOTIFY.md). |
+| `GET /v1/notify/<id>` | `wait=0..60` seconds | Returns `{"id","level","state":"shown"\|"acknowledged"\|"dismissed"\|"expired","acknowledged_ms"?}`. With `wait > 0`, blocks until the state leaves `shown` or the timeout elapses; unknown ids return 404. See [NOTIFY.md](NOTIFY.md). |
 
 Directory listings of very large dirs are not paginated in v1 (find has `limit`).
 
@@ -110,9 +113,21 @@ readable roots; denied Android directories and escaping symlinks remain blocked.
 pasted free text, literal-IP / Cloudflare-range checks (`IpAddresses`), and the
 pure-JVM verification-code parser and store. The store is memory-only, keeps at
 most ten entries, expires each entry ten minutes after receipt, and deduplicates
-the same code and sender within two minutes. Disabling relay clears it. Code and
-request long-polls share the two HTTP-worker waiting slots so file requests
-retain capacity. See [CODES.md](CODES.md).
+the same code and sender within two minutes. Disabling relay clears it. Code,
+request and notification-status long-polls share the two HTTP-worker waiting
+slots so file requests retain capacity. See [CODES.md](CODES.md) and
+[NOTIFY.md](NOTIFY.md).
+
+The pure-JVM notification store validates content, supplies an id when needed,
+enforces idempotency and keeps the last 50 records in memory. It limits normal
+notifications to 10 per sliding minute and urgent notifications to 3 per
+sliding 10 minutes. A requested urgent notification downgraded by the app
+counts against the normal limit. A displayed notification starts as `shown` and
+can become `acknowledged`, `dismissed` or `expired`; a failed delivery starts as
+`expired`. After display, `expired` is an explicit app-reported terminal state
+for a notification that is no longer active without a user tap or swipe, not
+an automatic time-to-live. The two-minute urgent alarm cap stops sound and
+vibration but leaves both the notification and state as `shown`.
 
 `:app` owns `ServerService`, `MainActivity`, `BootReceiver`, pairing and settings.
 The main screen puts one status card (plain-language state, a single
@@ -149,6 +164,18 @@ The foreground notification keeps the server visible. The activity refreshes the
 actual service state when resumed and observes starts/stops while visible.
 Permission guidance reports actual grants, including all-files access,
 notifications, battery optimisation and vendor autostart settings.
+
+Computer notifications use two channels. Normal messages use default system
+sound and vibration behavior, open Tentacle when tapped, and become
+acknowledged on a tap or dismissed on a swipe. Urgent alerts are allowed only
+when the owner has explicitly enabled them; otherwise the app displays a normal
+notification and reports `urgent_not_allowed`. An allowed urgent alert uses
+alarm audio and repeating vibration, a lock-screen full-screen activity and
+acknowledgement actions, stopping after acknowledgement or two minutes. If
+Android does not allow full-screen intents, the app still posts the
+high-priority urgent notification and reports `full_screen_not_allowed`.
+Missing notification permission or a blocked channel returns `shown: false`
+with a reason. See [NOTIFY.md](NOTIFY.md).
 
 Pairing format is
 `tentacle://pair?name=<urlencoded-device>&token=<token>&url=<urlencoded-base-url>`,
@@ -242,6 +269,7 @@ tentacle get PATH [DEST]
 tentacle cat PATH [--max-bytes N]
 tentacle discover [--since 90d] [--json]
 tentacle code [--wait 120] [--from TEXT] [--since now|30s|2m] [--json]
+tentacle notify TEXT [--title T] [--urgent] [--wait-ack [SECONDS]] [--json]
 tentacle doctor [--json]
 ```
 
@@ -263,6 +291,16 @@ It long-polls in calls of at most 55 seconds until the overall `--wait` deadline
 and optionally matches `--from` case-insensitively against sender or snippet.
 Plain output contains only the code; `--json` returns its code object. A timeout
 exits 1. Disabled relay exits 2 and tells the owner where to enable it.
+
+`notify` generates the id on the computer, posts a normal notification by
+default and retries a transport failure with the same id. `--urgent` requests
+an urgent alert; the response says whether it was downgraded or could not be
+shown. `--wait-ack` waits 300 seconds by default, or the supplied duration, in
+long-polls of at most 55 seconds. Acknowledged and dismissed are successful;
+not shown, rate limited or no response before the deadline exits 1. Usage and
+pairing errors exit 2. Without `--wait-ack`, `--json` emits the delivery object
+as one JSON value. With both options, stdout is JSON Lines: the delivery object
+first and the terminal acknowledgement or dismissal object when received.
 
 `pair` stores every `url=` of a link in `phone.urls` (and the first one in
 `phone.url`; a single-address link clears `phone.urls`), then selects a path.
@@ -349,8 +387,9 @@ diagnostics); `2` means usage/configuration error, including missing pairing;
 The phone API is token-protected. Anyone who has the phone token and can reach
 the server can read codes held for their ten-minute lifetime. Keep code relay
 off when it is not needed. Payment, purchase, transfer and withdrawal codes are
-never relayed, regardless of settings. Files stay read-only; the only API write
-updates an app request status and message (see [REQUESTS.md](REQUESTS.md)). Plain HTTP requires a trusted
+never relayed, regardless of settings. Files stay read-only; API writes can
+update an app request status or ask the phone to display a notification (see
+[REQUESTS.md](REQUESTS.md) and [NOTIFY.md](NOTIFY.md)). Plain HTTP requires a trusted
 network or encrypted transport. Recordings and transcripts remain local; do not
 upload phone content elsewhere without asking. Models may download on first
 use. Recording consent requirements remain the owner's responsibility.

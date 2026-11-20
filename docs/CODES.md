@@ -82,8 +82,9 @@ An enabled response has this shape:
 `source` is `notification` or `sms`. `snippet` is the captured message text cut
 to 160 characters. Entries are oldest first and include only those whose
 `received_ms` is strictly greater than `since`. With `wait > 0`, the request
-blocks until a matching newer entry exists or the timeout expires. Code and app
-request long-polls share a two-worker limit so file requests retain capacity.
+blocks until a matching newer entry exists or the timeout expires. Code,
+app-request and notification-status long-polls share a two-worker limit so file
+requests retain capacity.
 When relay is disabled, the endpoint returns immediately:
 
 ```json

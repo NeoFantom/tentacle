@@ -88,6 +88,7 @@ class ServerService : Service() {
                     api = api,
                     requestStore = RequestStores.get(this),
                     codeStore = dev.tentacle.codes.CodeStores.get(this),
+                    notifyStore = dev.tentacle.notify.PhoneNotifications.get(this),
                     info = {
                         PingInfo(
                             version = BuildConfig.VERSION_NAME,
@@ -221,6 +222,7 @@ class ServerService : Service() {
 
     override fun onDestroy() {
         AppLog.append("Server service stopping")
+        dev.tentacle.notify.PhoneNotifications.stopAlarms(this)
         networkCallback?.let { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) }
         networkCallback = null
         tunnelSubscription?.close()

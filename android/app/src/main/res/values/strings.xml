@@ -253,4 +253,22 @@
     <string name="codes_needs_sms">Needs SMS permission</string>
     <string name="codes_waiting">Waiting for codes</string>
     <string name="codes_last">Last code from %1$s, %2$s ago</string>
+    <string name="notify_channel">Messages from your computer</string>
+    <string name="notify_urgent_channel">Urgent alerts from your computer</string>
+    <string name="notify_section">Notifications from your computer</string>
+    <string name="notify_allow_urgent">Allow urgent alerts</string>
+    <string name="notify_urgent_warning">Urgent alerts ring and vibrate continuously, even on the lock screen, until you tap Acknowledge (up to 2 minutes). Only use this if you want your computer to be able to wake you.</string>
+    <string name="notify_acknowledge">Acknowledge</string>
+    <string name="notify_fix">Open settings</string>
+    <string name="notify_permission_missing">Notifications are disabled. Allow notifications so your computer can reach you.</string>
+    <string name="notify_full_screen_missing">Full-screen alerts are not allowed. Allow them to show urgent alerts over the lock screen; otherwise you receive a notification only.</string>
+    <string name="notify_normal_blocked">The computer message channel is blocked.</string>
+    <string name="notify_urgent_blocked">The urgent alert channel is blocked.</string>
+    <string name="notify_test_normal">Test normal</string>
+    <string name="notify_test_urgent">Test urgent</string>
+    <string name="notify_test_text">This is a test message from Tentacle.</string>
+    <string name="notify_test_delivered">Test notification delivered</string>
+    <string name="notify_test_not_shown">Test notification was not shown. Check notification permissions and channel settings.</string>
+    <string name="notify_test_no_full_screen">Test notification delivered. Full-screen alerts are not allowed.</string>
+    <string name="notify_test_failed">Test notification failed. Try again later; notification rate limits also apply to tests.</string>
 </resources>

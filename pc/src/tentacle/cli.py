@@ -12,7 +12,7 @@ import sys
 from . import __version__, config
 
 # Modules that contribute subcommands (see docs/ARCHITECTURE.md §5).
-COMMAND_MODULES = ["phone_cli", "calls", "codes_cmd", "requests_cmd"]
+COMMAND_MODULES = ["phone_cli", "calls", "codes_cmd", "notify_cmd", "requests_cmd"]
 
 
 def _config_commands(sub) -> None:

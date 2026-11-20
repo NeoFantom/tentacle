@@ -129,6 +129,9 @@ class MainActivity : Activity() {
     private lateinit var portText: TextView
     private lateinit var boot: Switch
     private lateinit var codesSwitch: Switch
+    private lateinit var urgentSwitch: Switch
+    private lateinit var notifyHelp: LinearLayout
+    private lateinit var testUrgent: Button
     private lateinit var codesNotificationsSwitch: Switch
     private lateinit var codesStatus: TextView
     private lateinit var codesAccessHelp: LinearLayout
@@ -185,6 +188,10 @@ class MainActivity : Activity() {
 
     private fun handleDebugIntent(intent: Intent) {
         if (!BuildConfig.DEBUG) return
+        if (intent.hasExtra("urgent_allowed")) {
+            settings.urgentAllowed = intent.getBooleanExtra("urgent_allowed", false)
+            intent.removeExtra("urgent_allowed")
+        }
         if (intent.hasExtra("codes_enabled")) {
             settings.codesEnabled = intent.getBooleanExtra("codes_enabled", false)
             intent.removeExtra("codes_enabled")
@@ -307,6 +314,7 @@ class MainActivity : Activity() {
         activityVisible = true
         ServerService.refreshNotificationChannel(this)
         AppUpdater.refreshNotificationChannel(this)
+        dev.tentacle.notify.PhoneNotifications.createChannels(this)
         val returningFromInstallPermission = AppUpdater.state is UpdateState.PermissionRequired
         AppUpdater.refreshInstallPermission(this)
         if (!returningFromInstallPermission) AppUpdater.check(this)
@@ -767,6 +775,7 @@ class MainActivity : Activity() {
         settingsCard = card().apply { setPadding(dp(14), dp(4), dp(18), dp(8)) }
         settingsBody = expander(settingsCard, getString(R.string.settings), large = true)
         val body = settingsBody.body
+        notifySection(body)
         codesSection(body)
         val portRow = row(body).apply { gravity = Gravity.CENTER_VERTICAL }
         portText = text(portRow, "", 15f).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
@@ -793,6 +802,83 @@ class MainActivity : Activity() {
             settings.updateSource = updateSourceField.text.toString().trim()
             AppUpdater.check(this, manual = true)
         }.also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(10) }
+    }
+
+    private fun notifySection(body: LinearLayout) {
+        text(body, getString(R.string.notify_section), 16f, bold = true)
+        urgentSwitch = switch(body, getString(R.string.notify_allow_urgent), settings.urgentAllowed) { enabled ->
+            if (!enabled) {
+                settings.urgentAllowed = false
+                refreshNotify()
+            } else {
+                updating = true
+                urgentSwitch.isChecked = false
+                updating = false
+                AlertDialog.Builder(this).setTitle(R.string.notify_allow_urgent)
+                    .setMessage(R.string.notify_urgent_warning)
+                    .setNegativeButton(R.string.cancel, null)
+                    .setPositiveButton(R.string.codes_turn_on) { _, _ ->
+                        settings.urgentAllowed = true
+                        refreshNotify()
+                    }.show()
+            }
+        }
+        notifyHelp = column().also { body.addView(it) }
+        val tests = buttonRow(body)
+        button(tests, getString(R.string.notify_test_normal), ButtonKind.OUTLINE, fill = true) { testNotify(false) }
+        testUrgent = button(tests, getString(R.string.notify_test_urgent), ButtonKind.OUTLINE, fill = true) { testNotify(true) }
+    }
+
+    private fun testNotify(urgent: Boolean) {
+        if (urgent && !settings.urgentAllowed) return
+        if (urgent && !ServerStatus.value.running) ServerService.start(this)
+        Thread({
+            val result = runCatching {
+                dev.tentacle.notify.PhoneNotifications.get(this).post(
+                    title = null, text = getString(R.string.notify_test_text),
+                    level = if (urgent) "urgent" else "normal", id = null)
+            }
+            runOnUiThread {
+                val entry = result.getOrNull()
+                val message = when {
+                    entry == null -> R.string.notify_test_failed
+                    !entry.delivery.shown -> R.string.notify_test_not_shown
+                    entry.delivery.reason == "full_screen_not_allowed" -> R.string.notify_test_no_full_screen
+                    else -> R.string.notify_test_delivered
+                }
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                refreshNotify()
+            }
+        }, "tentacle-notify-test").start()
+    }
+
+    private fun refreshNotify() {
+        if (!::notifyHelp.isInitialized) return
+        val permissions = dev.tentacle.notify.PhoneNotifications.permissions(this)
+        updating = true
+        urgentSwitch.isChecked = settings.urgentAllowed
+        updating = false
+        testUrgent.isEnabled = settings.urgentAllowed
+        notifyHelp.removeAllViews()
+        fun fix(message: Int, action: () -> Unit) {
+            text(notifyHelp, getString(message), 13f, secondary = true)
+            button(notifyHelp, getString(R.string.notify_fix), ButtonKind.OUTLINE, onClick = action)
+        }
+        if (!permissions.notificationsAllowed) fix(R.string.notify_permission_missing) { requestNotifications() }
+        if (Build.VERSION.SDK_INT >= 34 && !permissions.fullScreenAllowed) fix(R.string.notify_full_screen_missing) {
+            launch(Intent(SystemSettings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, packageUri()), appDetails())
+        }
+        fun channelSettings(channel: String) {
+            launch(Intent(SystemSettings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                .putExtra(SystemSettings.EXTRA_APP_PACKAGE, packageName)
+                .putExtra(SystemSettings.EXTRA_CHANNEL_ID, channel), appDetails())
+        }
+        if (!permissions.normalChannelAllowed) fix(R.string.notify_normal_blocked) {
+            channelSettings(dev.tentacle.notify.PhoneNotifications.NORMAL_CHANNEL)
+        }
+        if (!permissions.urgentChannelAllowed) fix(R.string.notify_urgent_blocked) {
+            channelSettings(dev.tentacle.notify.PhoneNotifications.URGENT_CHANNEL)
+        }
     }
 
     private fun codesSection(body: LinearLayout) {
@@ -994,6 +1080,7 @@ class MainActivity : Activity() {
         refreshUpdates()
         refreshCodes()
         portText.text = getString(R.string.port_value, settings.port)
+        refreshNotify()
         updating = true
         boot.isChecked = settings.startOnBoot
         updating = false

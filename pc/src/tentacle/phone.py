@@ -330,6 +330,54 @@ class PhoneClient:
                 raise PhoneError("bad_response", "phone returned an invalid code object", None)
         return payload
 
+    def send_notification(
+        self,
+        text: str,
+        *,
+        notification_id: str,
+        title: str | None = None,
+        urgent: bool = False,
+    ) -> dict[str, Any]:
+        """Ask the phone to show a notification.
+
+        The caller supplies the ID so retrying a request after a transport
+        failure remains idempotent.
+        """
+        body: dict[str, Any] = {
+            "text": text,
+            "level": "urgent" if urgent else "normal",
+            "id": notification_id,
+        }
+        if title is not None:
+            body["title"] = title
+        payload = self._json("notify", method="POST", body=body)
+        required = {"id": str, "level": str, "downgraded": bool, "shown": bool}
+        if (any(type(payload.get(name)) is not expected for name, expected in required.items())
+                or payload["id"] != notification_id
+                or payload["level"] not in {"normal", "urgent"}
+                or ("reason" in payload and type(payload["reason"]) is not str)):
+            raise PhoneError("bad_response", "phone returned an invalid notify response", None)
+        return payload
+
+    def notification(self, notification_id: str, wait: int = 0) -> dict[str, Any]:
+        """Get notification state, optionally waiting for acknowledgement or dismissal."""
+        wait_s = max(0, min(60, int(wait)))
+        endpoint = "notify/" + urllib.parse.quote(notification_id, safe="")
+        payload = self._json(
+            endpoint,
+            {"wait": wait_s},
+            timeout=max(self.timeout, wait_s + 5),
+        )
+        required = {"id": str, "level": str, "state": str}
+        if (any(type(payload.get(name)) is not expected for name, expected in required.items())
+                or payload["id"] != notification_id
+                or payload["level"] not in {"normal", "urgent"}
+                or payload["state"] not in {"shown", "acknowledged", "dismissed", "expired"}
+                or ("acknowledged_ms" in payload
+                    and type(payload["acknowledged_ms"]) is not int)):
+            raise PhoneError("bad_response", "phone returned an invalid notification response", None)
+        return payload
+
     def update_request(self, request_id: str, status: str, message: str) -> dict[str, Any]:
         """Update one request's status and phone-visible message."""
         endpoint = "requests/" + urllib.parse.quote(request_id, safe="")

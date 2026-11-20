@@ -1,8 +1,8 @@
 # Tentacle
 
 A manual toolkit that lets a local agent or human **browse Android phone files,
-pull call recordings, transcribe them locally on demand, and receive
-verification codes when the phone owner enables relay**.
+pull call recordings, transcribe them locally on demand, receive verification
+codes, and notify the phone owner from the paired computer**.
 
 ```text
 Android phone ← token-protected HTTP → tentacle CLI → local tools and agents
@@ -17,6 +17,8 @@ Android phone ← token-protected HTTP → tentacle CLI → local tools and agen
   backends are available.
 - `code` waits for a short-lived verification code received directly by SMS,
   with app notifications as an optional extra source.
+- `notify` sends a normal phone notification, or an urgent alert when the owner
+  has explicitly allowed and requested one.
 - The Python ≥ 3.11 core uses only the standard library. The Android app uses
   Kotlin with no third-party runtime dependencies.
 
@@ -99,6 +101,7 @@ tentacle calls [--since 7d] [--until DATE] [--source NAME] [--with TEXT] [--app 
 tentacle pull PHONE_PATH... [--to DIR]
 tentacle transcribe PHONE_PATH_OR_LOCAL_FILE [--json] [--force] [-o PREFIX]
 tentacle code [--wait 120] [--from TEXT] [--since now|30s|2m] [--json]
+tentacle notify TEXT [--title T] [--urgent] [--wait-ack [SECONDS]] [--json]
 tentacle doctor
 ```
 
@@ -145,6 +148,33 @@ relayed; the owner must type those codes personally. Anyone who has the phone
 token and can reach its server can read retained codes, so protect the token and
 transport and leave relay off when it is not needed. The full contract is in
 [Verification-code relay](docs/CODES.md).
+
+## Notifications from the computer
+
+Use `tentacle notify 'The task finished'` to send a normal notification to the
+phone owner. Normal is the non-alarm default; the phone's standard notification
+channel controls its sound and vibration. Add `--title T` for a short heading.
+If notifications are disabled or a channel is blocked, the command reports
+that the message was not shown.
+
+`--urgent` requests a continuously ringing and vibrating alarm-style alert.
+The app setting **Allow urgent alerts** is off by default; without it, the phone
+delivers the message as a normal notification and the command says it was
+downgraded. Use `--urgent` only when the owner explicitly asked to be woken or
+alerted for that particular event. Android may also require full-screen alert
+access; without it, the phone still posts a high-priority urgent notification
+and the command reports the limitation.
+
+`--wait-ack` waits up to five minutes for the owner to tap or dismiss the
+notification; supply seconds to choose another timeout. Use it when the next
+step requires knowing the owner saw the message. Agents may notify after a long
+task finishes, when they need a decision, or when blocked and the owner is
+unlikely to be watching the computer. Keep messages short and do not spam; the
+phone enforces separate normal and urgent rate limits. The complete API and
+permission behavior is in [Notifications from the computer](docs/NOTIFY.md).
+With `--json`, a command without acknowledgement waiting prints one delivery
+object; `--json --wait-ack` prints JSON Lines with delivery first and the
+terminal acknowledgement or dismissal when received.
 
 ## Requests from the app
 
