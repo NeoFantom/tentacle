@@ -1,0 +1,25 @@
+<resources>
+    <color name="bg">#FF111316</color>
+    <color name="card">#FF1C1F24</color>
+    <color name="outline">#FF2C3038</color>
+    <color name="outline_strong">#FF4A505A</color>
+    <color name="field">#FF15181C</color>
+    <color name="code_bg">#FF262A31</color>
+    <color name="text_primary">#FFE5E7EB</color>
+    <color name="text_secondary">#FFA3A9B2</color>
+    <color name="accent">#FF8AB4F8</color>
+    <color name="on_accent">#FF06265C</color>
+    <color name="accent_container">#FF213453</color>
+    <color name="on_accent_container">#FFD6E3FF</color>
+    <color name="good">#FF6DD58C</color>
+    <color name="good_container">#FF15311F</color>
+    <color name="on_good_container">#FFC2EFCF</color>
+    <color name="warn">#FFFFB95C</color>
+    <color name="warn_container">#FF3A2A10</color>
+    <color name="on_warn_container">#FFFFDDB0</color>
+    <color name="bad">#FFF2948F</color>
+    <color name="bad_container">#FF3D1715</color>
+    <color name="on_bad_container">#FFFFD7D3</color>
+    <color name="neutral_container">#FF262A31</color>
+    <color name="off">#FF6B717A</color>
+</resources>

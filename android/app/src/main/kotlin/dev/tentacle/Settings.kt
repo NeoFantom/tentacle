@@ -41,15 +41,15 @@ class Settings(context: Context) {
         set(value) { prefs.edit().putString("tunnel_host", value).apply() }
 
     var tunnelPort: Int
-        get() = prefs.getInt("tunnel_port", 22)
+        get() = prefs.getInt("tunnel_port", DEFAULT_TUNNEL_PORT)
         set(value) { prefs.edit().putInt("tunnel_port", value).apply() }
 
     var tunnelUser: String
-        get() = prefs.getString("tunnel_user", "")!!
+        get() = prefs.getString("tunnel_user", null) ?: DEFAULT_TUNNEL_USER
         set(value) { prefs.edit().putString("tunnel_user", value).apply() }
 
     var tunnelRemotePort: Int
-        get() = prefs.getInt("tunnel_remote_port", 8765)
+        get() = prefs.getInt("tunnel_remote_port", DEFAULT_REMOTE_PORT)
         set(value) { prefs.edit().putInt("tunnel_remote_port", value).apply() }
 
     val trustedHostKey: String
@@ -105,6 +105,11 @@ class Settings(context: Context) {
                 ?.let { "https://api.github.com/repos/$it/releases/latest" }.orEmpty()
         set(value) { prefs.edit().putString("update_source", value).apply() }
 
+    /** Xiaomi autostart cannot be detected; the "needs attention" item hides once its page was opened. */
+    var autostartOpened: Boolean
+        get() = prefs.getBoolean("autostart_opened", false)
+        set(value) { prefs.edit().putBoolean("autostart_opened", value).apply() }
+
     fun wasPermissionRequested(permission: String): Boolean = prefs.getBoolean("requested:$permission", false)
 
     fun markPermissionRequested(permission: String) {
@@ -115,6 +120,9 @@ class Settings(context: Context) {
 
     companion object {
         const val PREFS_NAME = "tentacle"
+        const val DEFAULT_TUNNEL_USER = "tentacle"
+        const val DEFAULT_TUNNEL_PORT = 22
+        const val DEFAULT_REMOTE_PORT = 8765
         private val tokenLock = Any()
     }
 }

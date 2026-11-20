@@ -170,7 +170,7 @@ object AppUpdater {
         UpdateState.Idle -> context.getString(R.string.update_status_idle)
         UpdateState.Disabled -> context.getString(R.string.update_status_disabled)
         UpdateState.Checking -> context.getString(R.string.update_status_checking)
-        UpdateState.UpToDate -> context.getString(R.string.update_status_current, BuildConfig.VERSION_NAME)
+        UpdateState.UpToDate -> context.getString(R.string.update_status_current)
         is UpdateState.Available -> context.getString(R.string.update_status_available, current.release.version)
         is UpdateState.Downloading -> current.percent?.let { context.getString(R.string.update_status_downloading_percent, it) }
             ?: context.getString(R.string.update_status_downloading)

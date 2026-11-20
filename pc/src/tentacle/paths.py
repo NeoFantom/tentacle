@@ -1,17 +1,20 @@
 """Choose the fastest working base URL among the phone's ordered candidates.
 
 The pairing link can carry several base URLs (tailnet, Wi-Fi, other LAN,
-public URL).  Every candidate speaks the same phone API; this module probes
-them with a short ``GET /v1/ping`` and picks the first one that works, in
-order, except that a reachable LAN address always wins: the phone reports its
+public URL).  Every candidate speaks the same phone API; this module races
+short ``GET /v1/ping`` probes against all of them at once and decides as soon
+as the answer cannot improve.  A reachable LAN address always wins and is
+taken the moment it answers: the phone reports its
 current Wi-Fi/Ethernet base URLs in ``/v1/ping`` (``lan``), the computer
 remembers them and probes them too, so being on the same network as the phone
 is detected automatically even after the phone's address changed.  A tailnet
 candidate (100.64.0.0/10) counts only while Tailscale uses a
 direct path to it: when the local ``tailscale`` CLI reports the peer as
-relayed and a later non-tailnet candidate works, the later one wins.  The
-winner is cached for a short time in the data directory so consecutive
-commands do not probe again.
+relayed and another candidate works, that one wins.  Once the first good
+candidate answers, the race waits only a short grace period for a LAN answer;
+slow or dead candidates never delay the choice (their probes finish in the
+background).  The winner is cached for a short time in the data directory so
+consecutive commands do not probe again.
 
 Standard library only.  The caller supplies the configuration values; this
 module never reads configuration files or environment variables.
@@ -24,12 +27,13 @@ import json
 import os
 import shutil
 import socket
+import queue
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -37,6 +41,10 @@ from typing import Any, Callable, Iterable
 from . import __version__
 
 PROBE_TIMEOUT_S = 2.5
+# After the first good (non-LAN) answer, how long a LAN answer may still win.
+LAN_GRACE_S = 0.25
+STATUS_TIMEOUT_S = 3.5
+REACHABLE = frozenset({"ok", "direct", "relayed"})
 CACHE_TTL_S = 60.0
 CACHE_NAME = "path-cache.json"
 TAILNET = ipaddress.ip_network("100.64.0.0/10")
@@ -48,7 +56,8 @@ class PathResult:
 
     ``status`` is ``ok`` (reachable; not a tailnet address or path unknown),
     ``direct`` / ``relayed`` (reachable tailnet address with the path reported
-    by the local Tailscale client) or ``unreachable``.
+    by the local Tailscale client), ``unreachable``, or ``pending`` (the race
+    was decided before this probe answered).
     """
 
     url: str
@@ -59,7 +68,7 @@ class PathResult:
 
     @property
     def reachable(self) -> bool:
-        return self.status != "unreachable"
+        return self.status in REACHABLE
 
     def to_json(self) -> dict[str, Any]:
         return {"url": self.url, "status": self.status, "rtt_ms": self.rtt_ms, "detail": self.detail}
@@ -268,8 +277,13 @@ class PathSelector:
         if self.cache_path is not None and self.cache_path.exists():
             self._remember("", self.learned_lan())
 
-    def select(self, *, refresh: bool = False, exclude: Iterable[str] = ()) -> Selection:
-        """Return the chosen URL. Raises ``LookupError`` if none is reachable."""
+    def select(self, *, refresh: bool = False, exclude: Iterable[str] = (),
+               wait_all: bool = False) -> Selection:
+        """Return the chosen URL. Raises ``LookupError`` if none is reachable.
+
+        ``wait_all`` waits for every probe so the results form a full table
+        (``tentacle ping``/``doctor``); otherwise the race stops early.
+        """
         excluded = set(exclude)
         if not self.urls:
             raise LookupError("phone URL is not configured")
@@ -282,39 +296,153 @@ class PathSelector:
             if url is not None:
                 self.last = Selection(url, cached=True)
                 return self.last
-        learned = self.learned_lan()
-        pending = [url for url in learned + self.urls if url not in excluded]
-        pending = list(dict.fromkeys(pending))
-        results = self._probe_all(pending)
-        # The phone tells us its current LAN addresses; try any we have not tried yet.
-        reports = [r.lan for r in results if r.reachable and r.lan is not None]
-        reported = list(dict.fromkeys(u for lan in reports for u in lan))
-        extra = [u for u in reported if u not in pending and u not in excluded]
-        if extra:
-            results += self._probe_all(extra)
-        if reports:
-            learned = reported
-        reachable_tailnet = [r for r in results if r.reachable and is_tailnet(r.url)]
-        if reachable_tailnet:
-            status = self._status()
-            for result in reachable_tailnet:
-                path = peer_path(status, urllib.parse.urlsplit(result.url).hostname or "")
-                if path:
-                    result.status = path
-        chosen = next((r for r in results if r.reachable and is_lan(r.url)), None)
-        if chosen is None:
-            chosen = next((r for r in results if r.status in {"ok", "direct"}), None)
-        if chosen is None:
-            chosen = next((r for r in results if r.reachable), None)
+        pending = [url for url in self.learned_lan() + self.urls if url not in excluded]
+        race = _Race(self._probe, self._status, excluded, wait_all)
+        chosen, results, reports = race.run(list(dict.fromkeys(pending)))
         self.last = Selection(chosen.url if chosen else "", results)
         if chosen is None:
             details = "; ".join(f"{r.url}: {r.detail or r.status}" for r in results)
             raise LookupError(f"no phone address is reachable ({details})")
+        # The phone tells us its current LAN addresses; remember them for next time.
+        learned = list(dict.fromkeys(u for lan in reports for u in lan)) if reports else None
         self._remember(chosen.url, learned)
         return self.last
 
-    def _probe_all(self, urls: list[str]) -> list[PathResult]:
-        if not urls:
-            return []
-        with ThreadPoolExecutor(max_workers=len(urls)) as pool:
-            return list(pool.map(self._probe, urls))
+
+class _Race:
+    """Probe candidates concurrently and pick one as soon as waiting cannot help.
+
+    Order of preference: a reachable LAN address (chosen the moment it
+    answers); otherwise the first good candidate in list order (non-tailnet
+    ``ok`` or tailnet ``direct``/``ok``), chosen once a short grace for LAN
+    answers has passed; a relayed tailnet path only when nothing else works.
+    Probes run on daemon threads, so unfinished ones never block the caller
+    or interpreter exit.
+    """
+
+    def __init__(self, probe: Callable[[str], PathResult],
+                 status: Callable[[], dict[str, Any] | None],
+                 excluded: set[str], wait_all: bool):
+        self._probe = probe
+        self._status_call = status
+        self._excluded = excluded
+        self._wait_all = wait_all
+        self._events: queue.Queue = queue.Queue()
+        self._order: list[str] = []
+        self._results: dict[str, PathResult] = {}
+        self._outstanding = 0
+        self._deadline = 0.0
+        self._status_state = "none"  # none | waiting | done
+        self._status: dict[str, Any] | None = None
+
+    def _launch(self, url: str) -> None:
+        self._order.append(url)
+        self._outstanding += 1
+        self._deadline = max(self._deadline, time.monotonic() + PROBE_TIMEOUT_S + 0.5)
+
+        def work() -> None:
+            try:
+                result = self._probe(url)
+            except Exception as exc:  # noqa: BLE001 - a broken probe is an unreachable path
+                result = PathResult(url, "unreachable", detail=str(exc))
+            self._events.put(("probe", result))
+        threading.Thread(target=work, name="tentacle-probe", daemon=True).start()
+
+    def _launch_status(self) -> None:
+        self._status_state = "waiting"
+        self._status_deadline = time.monotonic() + STATUS_TIMEOUT_S
+
+        def work() -> None:
+            try:
+                value = self._status_call()
+            except Exception:  # noqa: BLE001
+                value = None
+            self._events.put(("status", value))
+        threading.Thread(target=work, name="tentacle-tailscale-status", daemon=True).start()
+
+    def _classify(self, result: PathResult) -> None:
+        if result.reachable and is_tailnet(result.url) and result.status == "ok":
+            path = peer_path(self._status, urllib.parse.urlsplit(result.url).hostname or "")
+            if path:
+                result.status = path
+
+    def _awaiting_status(self, result: PathResult) -> bool:
+        return result.reachable and is_tailnet(result.url) and self._status_state == "waiting"
+
+    def run(self, urls: list[str]) -> tuple[PathResult | None, list[PathResult], list[list[str]]]:
+        for url in urls:
+            self._launch(url)
+        if any(is_tailnet(u) for u in urls):
+            # Ask the local Tailscale client in parallel with the probes.
+            self._launch_status()
+        reports: list[list[str]] = []
+        grace_until: float | None = None
+        while True:
+            chosen = self._decide(grace_until)
+            if chosen is not None:
+                break
+            done = self._outstanding == 0 and self._status_state != "waiting"
+            now = time.monotonic()
+            if done or now >= self._deadline:
+                break
+            waits = [self._deadline - now]
+            if grace_until is not None:
+                waits.append(grace_until - now)
+            if self._status_state == "waiting":
+                waits.append(self._status_deadline - now)
+            try:
+                kind, value = self._events.get(timeout=max(0.0, min(waits)))
+            except queue.Empty:
+                if self._status_state == "waiting" and time.monotonic() >= self._status_deadline:
+                    self._status_state = "done"
+                    for result in self._results.values():
+                        self._classify(result)
+                continue
+            if kind == "status":
+                self._status_state, self._status = "done", value
+                for result in self._results.values():
+                    self._classify(result)
+            else:
+                self._outstanding -= 1
+                result: PathResult = value
+                self._results[result.url] = result
+                if self._status_state == "done":
+                    self._classify(result)
+                if result.reachable and result.lan is not None:
+                    reports.append(result.lan)
+                    # A newly reported LAN address joins the race right away.
+                    for url in result.lan:
+                        if url not in self._order and url not in self._excluded:
+                            self._launch(url)
+            if grace_until is None and any(self._good(r) for r in self._results.values()):
+                grace_until = time.monotonic() + LAN_GRACE_S
+        final = chosen or self._final()
+        results = [self._results.get(url) or PathResult(url, "pending", detail="not waited for")
+                   for url in self._order]
+        return final, results, reports
+
+    def _good(self, result: PathResult) -> bool:
+        return result.status in {"ok", "direct"} and not self._awaiting_status(result)
+
+    def _decide(self, grace_until: float | None) -> PathResult | None:
+        if self._wait_all:
+            return None
+        for url in self._order:
+            result = self._results.get(url)
+            if result is not None and result.reachable and is_lan(url):
+                return result
+        if grace_until is not None and time.monotonic() >= grace_until:
+            return self._first(self._good)
+        return None
+
+    def _first(self, predicate: Callable[[PathResult], bool]) -> PathResult | None:
+        for url in self._order:
+            result = self._results.get(url)
+            if result is not None and predicate(result):
+                return result
+        return None
+
+    def _final(self) -> PathResult | None:
+        return (self._first(lambda r: r.reachable and is_lan(r.url))
+                or self._first(lambda r: r.status in {"ok", "direct"})
+                or self._first(lambda r: r.reachable))

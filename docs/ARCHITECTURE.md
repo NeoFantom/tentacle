@@ -90,7 +90,14 @@ A find walk resolves its root once, checks symbolic links per entry, and avoids
 canonicalising ordinary children repeatedly. Returned paths stay confined to
 readable roots; denied Android directories and escaping symlinks remain blocked.
 
+`:core` also owns `ServerInfoParser`, which recognises own-server settings in
+pasted free text, and literal-IP / Cloudflare-range checks (`IpAddresses`).
+
 `:app` owns `ServerService`, `MainActivity`, `BootReceiver`, pairing and settings.
+The main screen puts one status card (plain-language state, a single
+Start/Stop action, the state of each way in) first, shows a "needs attention"
+card only while a permission is missing, and keeps per-address links, token,
+advanced and app settings collapsed.
 The foreground notification keeps the server visible. The activity refreshes the
 actual service state when resumed and observes starts/stops while visible.
 Permission guidance reports actual grants, including all-files access,
@@ -159,10 +166,13 @@ addresses always bypass them.
 
 Path selection (`paths.py`): when `phone.urls` is non-empty it replaces
 `phone.url`. The candidates are probed concurrently with `GET /v1/ping`
-(2.5 s timeout) and the first working one in list order wins. A tailnet
-candidate is checked with `tailscale status --json` when that CLI exists; if
-the peer owning that address is relayed (no `CurAddr`) and a later candidate
-works, the later one wins, otherwise it is used anyway. The winner is cached for
+(2.5 s timeout) as a race decided as early as possible: a reachable LAN
+address wins the moment it answers; otherwise the first good candidate in list
+order wins after a 0.25 s grace for LAN answers; unfinished probes are left on
+daemon threads. A tailnet candidate is checked with `tailscale status --json`
+(run in parallel) when that CLI exists; if the peer owning that address is
+relayed (no `CurAddr`) it is used only when nothing else works. `ping`, `pair`
+and `doctor` wait for all probes to print the full table. The winner is cached for
 60 s in `<data_dir>/path-cache.json` (keyed by the candidate list). A transport
 error invalidates the cache and retries the request once on another candidate.
 The global `--url URL` option overrides `phone.url` and `phone.urls`. `find` uses its dedicated timeout; other requests use

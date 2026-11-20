@@ -133,7 +133,7 @@ def _pair(args) -> dict:
 
 def _ping_result(client: PhoneClient) -> dict:
     if client.paths.multiple:
-        client.select_path(refresh=True)
+        client.select_path(refresh=True, wait_all=True)
     result = dict(client.ping())
     result["base_url"] = client.url
     result["round_trip_ms"] = round(client.last_round_trip_ms or 0.0, 1)
@@ -317,7 +317,7 @@ def doctor(cfg) -> list[tuple[str, bool, str]]:
                 raise ValueError(f"phone URL must use HTTP(S) and contain a host: {url}")
         if not client.paths.multiple:
             return client.url
-        client.select_path(refresh=True)
+        client.select_path(refresh=True, wait_all=True)
         assert client.paths.last is not None
         return "chosen " + client.url + "\n" + "\n".join(_path_lines(client.paths.last.to_json()))
 

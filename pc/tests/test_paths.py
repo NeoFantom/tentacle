@@ -7,6 +7,8 @@ import io
 import json
 import socket
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -79,7 +81,7 @@ class SelectionTests(unittest.TestCase):
     def test_first_working_candidate_wins_in_order(self):
         tailnet, lan, public = "http://100.64.0.1:8765", "http://192.0.2.10:8765", "https://example.com/t"
         self.answers = {lan: PathResult(lan, "ok", 3.0), public: PathResult(public, "ok", 80.0)}
-        selection = self.selector([tailnet, lan, public]).select()
+        selection = self.selector([tailnet, lan, public]).select(wait_all=True)
         self.assertEqual(selection.url, lan)
         self.assertEqual([r.status for r in selection.results], ["unreachable", "ok", "ok"])
         self.assertEqual(sorted(self.probed), sorted([tailnet, lan, public]))
@@ -185,6 +187,102 @@ class SelectionTests(unittest.TestCase):
         self.assertFalse(paths.is_local("https://example.com/t"))
         self.assertTrue(paths.is_tailnet("http://100.127.255.254:8765"))
         self.assertFalse(paths.is_tailnet("http://100.128.0.1:8765"))
+
+
+class RaceTests(unittest.TestCase):
+    """Selection must not wait for slow or dead candidates once the answer is known."""
+
+    TAILNET, LAN, PUBLIC = "http://100.64.0.1:8765", "http://192.0.2.10:8765", "https://example.com/t"
+    DEAD = "http://198.51.100.9:8765"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.plan: dict[str, tuple[float, str]] = {}
+        self.finished: list[str] = []
+
+    def prober(self, url: str) -> PathResult:
+        delay, status = self.plan.get(url, (0.0, "unreachable"))
+        time.sleep(delay)
+        self.finished.append(url)
+        return PathResult(url, status, round(delay * 1000, 1))
+
+    def select(self, urls, *, status=None, wait_all=False):
+        phone = config.PhoneConfig(urls=list(urls), token="t")
+        selector = PathSelector(phone, Path(self.tmp.name), prober=self.prober,
+                                status=status or (lambda: None), clock=Clock())
+        started = time.monotonic()
+        selection = selector.select(refresh=True, wait_all=wait_all)
+        return selection, time.monotonic() - started
+
+    def test_slow_unreachable_candidates_do_not_delay_a_lan_answer(self):
+        self.plan = {self.TAILNET: (2.0, "unreachable"), self.DEAD: (2.0, "unreachable"),
+                     self.LAN: (0.05, "ok"), self.PUBLIC: (1.5, "ok")}
+        selection, elapsed = self.select([self.TAILNET, self.DEAD, self.LAN, self.PUBLIC])
+        self.assertEqual(selection.url, self.LAN)
+        self.assertLess(elapsed, 0.5)
+        statuses = {r.url: r.status for r in selection.results}
+        self.assertEqual(statuses[self.TAILNET], "pending")
+        self.assertFalse(selection.results[0].reachable)
+
+    def test_first_good_answer_waits_only_a_short_grace(self):
+        self.plan = {self.TAILNET: (2.0, "unreachable"), self.DEAD: (2.0, "unreachable"),
+                     self.PUBLIC: (0.05, "ok")}
+        selection, elapsed = self.select([self.TAILNET, self.DEAD, self.PUBLIC])
+        self.assertEqual(selection.url, self.PUBLIC)
+        self.assertGreaterEqual(elapsed, paths.LAN_GRACE_S)
+        self.assertLess(elapsed, 0.8)
+
+    def test_lan_answer_within_the_grace_still_wins(self):
+        self.plan = {self.PUBLIC: (0.0, "ok"), self.LAN: (0.1, "ok"), self.DEAD: (2.0, "unreachable")}
+        selection, elapsed = self.select([self.PUBLIC, self.DEAD, self.LAN])
+        self.assertEqual(selection.url, self.LAN)
+        self.assertLess(elapsed, 0.5)
+        # Too late for the grace: the public path is kept.
+        self.plan[self.LAN] = (1.0, "ok")
+        selection, elapsed = self.select([self.PUBLIC, self.DEAD, self.LAN])
+        self.assertEqual(selection.url, self.PUBLIC)
+        self.assertLess(elapsed, 0.8)
+
+    def test_earlier_good_candidate_in_the_grace_keeps_list_order(self):
+        self.plan = {self.TAILNET: (0.1, "ok"), self.PUBLIC: (0.0, "ok")}
+        direct = lambda: _status("100.64.0.1", cur_addr="192.0.2.7:41641", relay="")  # noqa: E731
+        selection, _ = self.select([self.TAILNET, self.PUBLIC], status=direct)
+        self.assertEqual((selection.url, selection.results[0].status), (self.TAILNET, "direct"))
+
+    def test_relayed_tailnet_is_used_only_when_nothing_else_answers(self):
+        relayed = lambda: _status("100.64.0.1")  # noqa: E731
+        self.plan = {self.TAILNET: (0.0, "ok"), self.PUBLIC: (0.4, "ok"), self.DEAD: (0.6, "unreachable")}
+        selection, elapsed = self.select([self.TAILNET, self.PUBLIC, self.DEAD], status=relayed)
+        self.assertEqual(selection.url, self.PUBLIC)
+        self.assertLess(elapsed, 1.0)
+        self.plan = {self.TAILNET: (0.0, "ok"), self.DEAD: (0.3, "unreachable")}
+        selection, elapsed = self.select([self.TAILNET, self.DEAD], status=relayed)
+        self.assertEqual((selection.url, selection.results[0].status), (self.TAILNET, "relayed"))
+        self.assertGreaterEqual(elapsed, 0.3)
+
+    def test_slow_tailscale_status_does_not_hold_up_other_paths(self):
+        def slow_status():
+            time.sleep(2.0)
+            return _status("100.64.0.1")
+        self.plan = {self.TAILNET: (0.0, "ok"), self.PUBLIC: (0.05, "ok")}
+        selection, elapsed = self.select([self.TAILNET, self.PUBLIC], status=slow_status)
+        self.assertEqual(selection.url, self.PUBLIC)
+        self.assertLess(elapsed, 0.8)
+
+    def test_wait_all_collects_every_result(self):
+        self.plan = {self.LAN: (0.0, "ok"), self.DEAD: (0.3, "unreachable")}
+        selection, elapsed = self.select([self.DEAD, self.LAN], wait_all=True)
+        self.assertEqual(selection.url, self.LAN)
+        self.assertGreaterEqual(elapsed, 0.3)
+        self.assertEqual([r.status for r in selection.results], ["unreachable", "ok"])
+
+    def test_unfinished_probes_run_on_daemon_threads(self):
+        self.plan = {self.LAN: (0.0, "ok"), self.DEAD: (1.0, "unreachable")}
+        self.select([self.DEAD, self.LAN])
+        probes = [t for t in threading.enumerate() if t.name == "tentacle-probe"]
+        self.assertTrue(probes)
+        self.assertTrue(all(t.daemon for t in probes))
 
 
 class FakePhonePathTests(unittest.TestCase):

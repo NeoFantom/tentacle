@@ -13,10 +13,10 @@ standard pieces (HTTP, TLS, SSH, a VPN mesh).
 | **Tailscale app** | local server on + Tailscale app | `http://<phone 100.x IP>:8765` | both in the same tailnet, no other VPN app on the phone |
 | **Own server (SSH tunnel)** | local server on + SSH tunnel to your server | `https://<your server>/<path>` | both can reach your server over the Internet |
 
-Modes combine. The app's "Copy pairing link (all addresses)" puts every
-working address into one link (built-in tailnet, Wi-Fi, other interfaces,
-public URL); `tentacle pair` stores them as `phone.urls` and every command uses
-the first one that works (see [How the computer chooses a path](#how-the-computer-chooses-a-path)).
+Modes combine. The app's "Copy pairing link" puts every working address into
+one link (built-in tailnet, Wi-Fi, other interfaces, public URL); `tentacle
+pair` stores them as `phone.urls` and every command races them and uses the
+best one that answers (see [How the computer chooses a path](#how-the-computer-chooses-a-path)).
 Direct whenever possible, relay only when unavoidable.
 
 **Android allows only one VPN at a time.** The Tailscale *app* is a VPN on
@@ -38,19 +38,21 @@ networking, no VpnService, no TUN). It joins your tailnet as its own device
 file server's port; nothing else of the phone is exposed, and the phone token
 is still required. The protocol is plain Tailscale/WireGuard; nothing custom.
 
-1. In the app, open **Tailscale (built-in)** and turn it on (the file server
-   must be running).
+1. In the app, turn on the **Tailscale (built-in)** card under "Ways to
+   connect" (the file server must be running).
 2. Log in, either
    - interactively: the status shows "Needs login"; tap **Log in** to open the
      control server's login page in the browser, sign in (or, on Headscale,
      have the admin approve the node), or
-   - with a pre-auth key: under **Advanced** enter an auth key before enabling.
+   - with a pre-auth key: under **Advanced** enter an auth key and tap **Save
+     Tailscale settings** before enabling.
      The key is stored app-private, never shown again, and deleted after the
      first successful login.
-3. The status shows "Connected as 100.x.y.z" and the pairing section gains a
-   "Tailscale (built-in)" line. Copy the pairing link (or the all-addresses
-   link) and run `tentacle pair '<link>'` on the computer, which must be in the
-   same tailnet (Tailscale client on the computer).
+3. The status shows "Connected as 100.x.y.z" and the status card's Tailscale
+   row turns green. Tap **Copy pairing link** (it now includes the tailnet
+   address; single-address links are under **More**) and run
+   `tentacle pair '<link>'` on the computer, which must be in the same tailnet
+   (Tailscale client on the computer).
 
 **Headscale / other control servers.** Under **Advanced**, set the control
 server URL (e.g. `https://example.com`); empty means Tailscale's default
@@ -78,31 +80,45 @@ direct rule for it.
 
 ## How the computer chooses a path
 
-`phone.urls` (written by `tentacle pair` from an all-addresses link) lists the
+`phone.urls` (written by `tentacle pair` from the app's pairing link) lists the
 phone's base URLs in preference order; when it is empty, `phone.url` is used
 alone. For each command the CLI:
 
-1. probes all candidates at once with `GET /v1/ping` (2.5 s timeout; LAN,
-   loopback and tailnet addresses never go through a system proxy), together
-   with the LAN addresses the phone reported last time. The phone's ping answer
-   lists its current Wi-Fi/Ethernet base URLs (`lan`); any of them not tried yet
-   is probed right away and remembered, so a changed Wi-Fi address is found
-   without re-pairing;
-2. picks a reachable **LAN** address (private, non-tailnet) first — same network
-   means no relay and full Wi-Fi speed. Otherwise the first working candidate in
-   list order wins. A tailnet address
-   (100.64.0.0/10) counts only while it is a direct path: if the computer's
-   `tailscale status --json` shows that peer as relayed and a later candidate
-   works (for example your own server), the later one wins; if nothing else
-   works, the relayed tailnet path is used anyway. Without a `tailscale` CLI the
-   tailnet candidate is used as is. (Tailscale's public relays can be slow from
-   some regions; your own server is the intended fallback.)
+1. **races** all candidates at once with `GET /v1/ping` (2.5 s timeout each;
+   LAN, loopback and tailnet addresses never go through a system proxy),
+   together with the LAN addresses the phone reported last time, and asks the
+   local `tailscale status --json` in parallel when a tailnet address is among
+   them. The phone's ping answer lists its current Wi-Fi/Ethernet base URLs
+   (`lan`); any of them not tried yet joins the race the moment it is reported
+   and is remembered, so a changed Wi-Fi address is found without re-pairing;
+2. decides as soon as the answer cannot improve:
+   - a reachable **LAN** address (private, non-tailnet) is taken the moment it
+     answers — same network means no relay and full Wi-Fi speed;
+   - otherwise, when the first *good* candidate answers (a non-tailnet one such
+     as your own server, or a tailnet address whose peer is a direct path), the
+     race waits only a short grace (0.25 s) for a LAN answer, then takes the
+     first good candidate in list order that has answered;
+   - a **relayed** tailnet path (the computer's `tailscale status` shows the
+     peer without a direct address) is used only when nothing else answers
+     before the timeout. Without a `tailscale` CLI, or while its answer is
+     still pending, the tailnet candidate is taken at face value.
+     (Tailscale's public relays can be slow from some regions; your own server
+     is the intended fallback.)
+
+   Slow or dead candidates never delay the choice: their probes finish in the
+   background and are ignored.
 3. caches the winner for 60 s in the data directory; a connection error clears
    the cache and retries once on the next candidate.
 
-`tentacle ping` and `tentacle doctor` show every candidate with its result
-(`ok`, `direct`, `relayed`, `unreachable`) and round-trip time, and which one
-was chosen. `tentacle --url URL …` bypasses the selection for one command.
+`tentacle ping`, `tentacle pair` and `tentacle doctor` wait for every probe and
+show each candidate with its result (`ok`, `direct`, `relayed`, `unreachable`)
+and round-trip time, and which one was chosen. `tentacle --url URL …` bypasses
+the selection for one command.
+
+On the phone, the local server, the SSH tunnel and the built-in Tailscale node
+start independently when the service starts (none waits for another). On a
+network change the tunnel reconnects at once with its backoff reset, and the
+Tailscale node is told about the new interfaces immediately.
 
 ## Own server mode (SSH reverse tunnel)
 
@@ -122,16 +138,35 @@ the tunnel leg.
 
 ### Phone app (SSH tunnel settings)
 
-- Host, port (default 22), user, remote bind port (default 8765 on
-  `127.0.0.1`).
+- Card **Own server (SSH tunnel)**: a switch, a one-line status and, under
+  **Server settings**, the fields: server address (SSH host), SSH port
+  (default 22), user (default `tentacle`), remote port (default 8765, bound on
+  `127.0.0.1`) and the optional public URL. There is no default server: the
+  project is open source and examples use `example.com` / `192.0.2.x`.
+- **Paste server info**: paste any text that contains the details and tap
+  **Recognize** (or **Paste**, which takes the clipboard). The app picks out
+  the host, SSH port, user, remote port and public URL from, for example,
+  `ssh -p 2222 tentacle@192.0.2.10`, `ssh tentacle@host -p 2222`,
+  `ssh -N -R 127.0.0.1:9876:127.0.0.1:8765 tentacle@host`, `ssh://user@host:2222`,
+  `user@[2001:db8::1]:22`, bare IPv4/IPv6 addresses or domain names, an
+  `https://` URL (taken as the public URL; its host is used for SSH only when
+  nothing else names the server), labelled lines in English or Chinese
+  (`Host: …`, `主机：…`, `端口 22`, `用户名=tentacle`, `远程端口 9876`) and the
+  `permitlisten="127.0.0.1:<port>"` of an `authorized_keys` line. It shows what
+  it recognised and what is still missing; nothing is saved until you tap
+  **Save**. Fields that are left empty use the defaults above.
 - The SSH host must reach the server directly. If your web domain sits behind
   an HTTP CDN/proxy (e.g. Cloudflare's orange cloud), SSH on that name goes to
   the CDN and never arrives: the app stays on "connecting", the host key stays
   untrusted, and the server's sshd log shows nothing. Use the server's IP or a
   DNS-only name for the SSH host; the public URL can still be the CDN name.
+  The app resolves the SSH host and shows a warning when it lands in
+  Cloudflare's published address ranges.
 - Key: the app generates its own key pair on first use (ECDSA P-256, private
   key never leaves the app) and shows the public key in OpenSSH format with a
-  copy button. Password auth is not supported.
+  copy button, plus a ready `authorized_keys` line, under **Server setup
+  (key)**. Password auth is not supported. The server needs an ECDSA or RSA
+  host key (the SSH library does not accept an Ed25519-only server).
 - Host key: trust on first use; the fingerprint is shown and stored; a changed
   host key stops the tunnel with an error until the user re-trusts it.
 - Keepalive every 30 s; reconnect with exponential backoff (1 s … 60 s, with

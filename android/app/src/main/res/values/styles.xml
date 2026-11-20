@@ -2,5 +2,11 @@
     <!-- DeviceDefault.DayNight is not available on every supported API. -->
     <style name="AppTheme" parent="android:style/Theme.DeviceDefault.Light.NoActionBar">
         <item name="android:windowLightStatusBar">true</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
     </style>
 </resources>

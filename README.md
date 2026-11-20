@@ -129,15 +129,16 @@ To teach your agent the workflow, link `skills/tentacle` into its skill director
 Use a LAN address on the same network, USB with
 `adb forward tcp:8765 tcp:8765`, or Tailscale on both devices. An own-server
 setup can expose the phone through an SSH reverse tunnel and HTTPS, for example
-`https://example.com/tentacle`. The PC supports URL path prefixes; Android's
-built-in SSH-tunnel feature is a later task, so that setup currently needs an
-external SSH client. Details: [Connecting](docs/CONNECT.md).
+`https://example.com/tentacle`; the app maintains that tunnel itself (paste
+your server's details into "Own server" and it fills in the fields). The PC
+supports URL path prefixes. Details: [Connecting](docs/CONNECT.md).
 
 Android allows only one VPN at a time: the Tailscale app cannot run together
 with a phone proxy/VPN app. The app's built-in Tailscale node is not a VPN and
 works while such an app stays on; an SSH tunnel is an ordinary TCP connection
-and also coexists with it. "Copy pairing link (all addresses)" lets the PC pick
-the fastest working address automatically (`tentacle ping` shows the choice).
+and also coexists with it. The app's "Copy pairing link" carries every address;
+the PC races them and picks the fastest working one automatically
+(`tentacle ping` shows the choice).
 
 ## Privacy and limitations
 

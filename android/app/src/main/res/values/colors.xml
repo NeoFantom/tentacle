@@ -1,0 +1,26 @@
+<resources>
+    <!-- Light palette; dark values live in values-night/colors.xml. -->
+    <color name="bg">#FFF3F5F8</color>
+    <color name="card">#FFFFFFFF</color>
+    <color name="outline">#FFE1E4E9</color>
+    <color name="outline_strong">#FFC3C8D0</color>
+    <color name="field">#FFFFFFFF</color>
+    <color name="code_bg">#FFEEF1F5</color>
+    <color name="text_primary">#FF1A1C20</color>
+    <color name="text_secondary">#FF5D636B</color>
+    <color name="accent">#FF0B57D0</color>
+    <color name="on_accent">#FFFFFFFF</color>
+    <color name="accent_container">#FFD9E5FB</color>
+    <color name="on_accent_container">#FF0A3A8C</color>
+    <color name="good">#FF1E8E3E</color>
+    <color name="good_container">#FFE3F3E7</color>
+    <color name="on_good_container">#FF0D5225</color>
+    <color name="warn">#FFB25E00</color>
+    <color name="warn_container">#FFFDF0DC</color>
+    <color name="on_warn_container">#FF6B3A00</color>
+    <color name="bad">#FFC5221F</color>
+    <color name="bad_container">#FFFCE6E4</color>
+    <color name="on_bad_container">#FF7A1310</color>
+    <color name="neutral_container">#FFE9ECF1</color>
+    <color name="off">#FF9AA0A8</color>
+</resources>

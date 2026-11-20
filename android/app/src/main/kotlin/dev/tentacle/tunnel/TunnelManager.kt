@@ -36,10 +36,20 @@ class TunnelManager(
     private var generation = 0L
     private var attempt = 0
     private var callbackRegistered = false
+    private var defaultNetwork: Network? = null
 
+    // A new default network (Wi-Fi <-> mobile) kills the old TCP connection:
+    // reconnect at once with the backoff reset instead of waiting for keepalives.
+    // Registration reports the current network immediately; that is not a change.
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = retry()
-        override fun onLost(network: Network) = retry()
+        override fun onAvailable(network: Network) {
+            val changed = synchronized(lock) { (defaultNetwork != network).also { defaultNetwork = network } }
+            if (changed) retry()
+        }
+        override fun onLost(network: Network) {
+            synchronized(lock) { if (defaultNetwork == network) defaultNetwork = null }
+            retry()
+        }
     }
 
     fun start(localPort: Int) {
@@ -55,6 +65,7 @@ class TunnelManager(
                 return
             }
             if (!callbackRegistered) {
+                defaultNetwork = connectivity.activeNetwork
                 connectivity.registerDefaultNetworkCallback(networkCallback)
                 callbackRegistered = true
             }

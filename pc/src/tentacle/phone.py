@@ -128,10 +128,12 @@ class PhoneClient:
         self.url = url
         self._opener = opener(url, self._use_system_proxy)
 
-    def select_path(self, *, refresh: bool = False, exclude: tuple[str, ...] = ()) -> None:
-        """Probe the configured candidates and use the chosen one."""
+    def select_path(self, *, refresh: bool = False, exclude: tuple[str, ...] = (),
+                    wait_all: bool = False) -> None:
+        """Probe the configured candidates and use the chosen one (``wait_all``:
+        wait for every probe, for a complete path table)."""
         try:
-            selection = self.paths.select(refresh=refresh, exclude=exclude)
+            selection = self.paths.select(refresh=refresh, exclude=exclude, wait_all=wait_all)
         except LookupError as exc:
             raise PhoneError("unreachable", str(exc), None) from exc
         self._set_url(selection.url)
