@@ -29,9 +29,11 @@ android {
         applicationId = "dev.tentacle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "0.7.3"
-        buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
+        versionCode = 16
+        versionName = "0.7.4"
+        // A resource, not a BuildConfig constant: Kotlin inlines Java constants, and an
+        // incremental build after a build without -Ptentacle.updateRepo kept the empty value.
+        resValue("string", "update_repo", updateRepo)
     }
     buildFeatures { buildConfig = true }
     buildTypes {

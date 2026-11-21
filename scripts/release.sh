@@ -49,6 +49,18 @@ if [[ ! -f $apk || ! -f $checksum ]]; then
     exit 1
 fi
 
+# The in-app updater only works if the APK names this repository; refuse to ship one that doesn't.
+sdk=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$(sed -n 's/^sdk.dir=//p' android/local.properties 2>/dev/null)}}
+aapt2=$(ls "$sdk"/build-tools/*/aapt2 2>/dev/null | sort -V | tail -n 1)
+if [[ -z $aapt2 ]]; then
+    echo "aapt2 not found (set ANDROID_HOME); cannot verify the update source in the APK." >&2
+    exit 1
+fi
+if ! "$aapt2" dump resources "$apk" | grep -A1 'string/update_repo' | grep -qF "\"$update_repo\""; then
+    echo "The built APK does not carry the update source $update_repo; not releasing." >&2
+    exit 1
+fi
+
 gh release create "v$version" "$apk" "$checksum" \
     --repo "$update_repo" \
     --title "Tentacle $version" \

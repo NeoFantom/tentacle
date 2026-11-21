@@ -5,6 +5,7 @@ import dev.tentacle.core.Tokens
 
 class Settings(context: Context) {
     private val contextForCodes = context.applicationContext
+    private val bundledUpdateRepo = context.getString(R.string.update_repo).trim()
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     val token: String
@@ -120,7 +121,7 @@ class Settings(context: Context) {
 
     var updateSource: String
         get() = prefs.getString("update_source", null)
-            ?: BuildConfig.UPDATE_REPO.takeIf { it.isNotEmpty() }
+            ?: bundledUpdateRepo.takeIf { it.isNotEmpty() }
                 ?.let { "https://api.github.com/repos/$it/releases/latest" }.orEmpty()
         set(value) { prefs.edit().putString("update_source", value).apply() }
 
