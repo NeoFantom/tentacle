@@ -51,6 +51,8 @@ data class PingInfo(
     val tailnet: Map<String, Any>? = null,
     /** Optional, additive: current Wi-Fi/Ethernet base URLs, so a computer on the same LAN can switch to them. */
     val lan: List<String>? = null,
+    /** Optional, additive: supported request workflow extensions. */
+    val requests: Map<String, Boolean>? = null,
 ) {
     fun toJson(timeMs: Long = System.currentTimeMillis()): Map<String, Any> = linkedMapOf<String, Any>(
         "app" to "tentacle", "api" to 1, "version" to version, "device" to device,
@@ -62,5 +64,6 @@ data class PingInfo(
     ).apply {
         tailnet?.let { put("tailnet", it) }
         lan?.let { put("lan", it) }
+        requests?.let { put("requests", it) }
     }
 }

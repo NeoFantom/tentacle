@@ -55,6 +55,7 @@ class HttpServerTest {
                     allFilesAccess = true,
                     roots = listOf(StorageRoot("primary", root.toFile(), "Internal")),
                     timezone = "Asia/Shanghai",
+                    requests = linkedMapOf("followup" to true, "retry" to true),
                 )
             },
         )
@@ -150,6 +151,7 @@ class HttpServerTest {
         assertTrue(response.text.contains("\"id\":\"primary\""))
         assertTrue(Regex("\\\"time_ms\\\":\\d+").containsMatchIn(response.text))
         assertTrue(response.text.contains("\"timezone\":\"Asia/Shanghai\""))
+        assertTrue(response.text.contains("\"requests\":{\"followup\":true,\"retry\":true}"))
         assertFalse(response.text.contains("\"tailnet\""))
     }
 
@@ -188,6 +190,18 @@ class HttpServerTest {
         assertEquals("{\"app\":\"tentacle\",\"api\":1,\"version\":\"0.3.1\",\"device\":\"Test Device\"," +
             "\"android_sdk\":35,\"roots\":[],\"all_files_access\":true,\"time_ms\":5,\"timezone\":\"UTC\"," +
             "\"lan\":[\"http://192.168.0.5:8765\"]}", Json.stringify(info.toJson(5)))
+    }
+
+    @Test
+    fun `ping info adds request capabilities only when supplied`() {
+        val withoutCapabilities = PingInfo("0.3.1", "Test Device", 35, true, emptyList(), "UTC")
+        assertFalse(withoutCapabilities.toJson(5).containsKey("requests"))
+
+        val info = withoutCapabilities.copy(requests = linkedMapOf("followup" to true, "retry" to true))
+        assertEquals(
+            mapOf("followup" to true, "retry" to true),
+            info.toJson(5)["requests"],
+        )
     }
 
     @Test
@@ -431,17 +445,32 @@ class HttpServerTest {
         assertEquals(200, log.status)
         assertEquals("text/plain; charset=utf-8", log.headers["content-type"])
         assertEquals("diagnostic 日志", log.text)
-        fun update(status: String) = request("POST", "/v1/requests/${item.id}",
-            body = Json.stringify(mapOf("status" to status, "message" to "Result")))
+        fun update(status: String, message: String = "Result") = request("POST", "/v1/requests/${item.id}",
+            body = Json.stringify(mapOf("status" to status, "message" to message)))
+        fun successfulUpdate(status: String, message: String): Map<*, *> {
+            val response = update(status, message)
+            assertEquals(200, response.status, "$status: $message")
+            return Json.parse(response.text) as Map<*, *>
+        }
         assertEquals(409, update("done").status)
         assertEquals(200, update("working").status)
         assertEquals(409, update("working").status)
         assertEquals(200, update("new").status)
         assertEquals(200, update("working").status)
         assertEquals(200, update("done").status)
-        assertEquals(409, update("failed").status)
-        val final = Json.parse(update("new").text) as Map<*, *>
-        assertEquals("conflict", final["error"])
+        val closed = successfulUpdate("failed", "Closed")
+        assertEquals("failed", closed["status"])
+        assertEquals("Closed", closed["message"])
+        val merged = successfulUpdate("done", "Merged")
+        assertEquals("done", merged["status"])
+        assertEquals("Merged", merged["message"])
+        val needsChanges = successfulUpdate("failed", "Needs changes")
+        assertEquals("failed", needsChanges["status"])
+        assertEquals("Needs changes", needsChanges["message"])
+        val retried = successfulUpdate("new", "ignored")
+        assertEquals("new", retried["status"])
+        assertEquals("", retried["message"])
+        assertEquals(409, update("done").status)
         assertEquals(404, request("POST", "/v1/requests/unknown", body =
             "{\"status\":\"working\",\"message\":\"\"}").status)
         assertEquals(404, request("GET", "/v1/requests/unknown/log").status)

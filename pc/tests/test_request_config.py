@@ -16,12 +16,18 @@ class RequestsConfigTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {"TENTACLE_TEST_ROOT": tmp}):
                 cfg = config.from_dict({"requests": {
                     "repo": "$TENTACLE_TEST_ROOT/repo",
+                    "fork_repo": "$TENTACLE_TEST_ROOT/fork",
                     "prompt_template": "$TENTACLE_TEST_ROOT/prompt.txt",
                 }})
                 self.assertEqual(cfg.requests.repo_path, Path(tmp) / "repo")
+                self.assertEqual(cfg.requests.fork_repo_path, Path(tmp) / "fork")
                 self.assertEqual(cfg.requests.prompt_template_path, Path(tmp) / "prompt.txt")
         self.assertEqual(cfg.requests.shell, ["bash", "-lc"])
         self.assertEqual(cfg.requests.push, "git push")
+        self.assertEqual(cfg.requests.push_remote, "origin")
+        self.assertEqual(cfg.requests.base, "")
+        self.assertEqual(cfg.requests.pr_repo, "")
+        self.assertEqual(cfg.requests.review_command, "")
         self.assertIn(".github/**", cfg.requests.protected)
 
     def test_set_values_preserves_shell_command_characters(self):
@@ -43,6 +49,8 @@ class RequestsConfigTest(unittest.TestCase):
             {"timeout_s": 0},
             {"timeout_s": True},
             {"push": "  "},
+            {"push_remote": "  "},
+            {"pr_repo": ["owner", "tentacle"]},
             {"protected": [".github/**", 3]},
         ]
         for values in invalid:

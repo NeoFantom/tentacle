@@ -13,6 +13,25 @@ or absolute (`/storage/emulated/0/...`). Configuration is discoverable through
 Run `tentacle requests list` to see what the phone owner has asked the computer
 to change; do not start the watcher or act on a request unless explicitly asked.
 
+## Requests from the app
+
+`tentacle requests watch` runs the configured implementer command for one phone
+request at a time. The implementer writes `Target: upstream` for work useful to
+most Tentacle users or `Target: personal` for owner-specific work, then a short
+result. It commits only on the request branch and does not bump versions for an
+upstream pull request. In a separately configured personal-fork checkout, the
+rerun bumps patch versions for changed code. The implementer never pushes,
+opens pull requests or releases; the watcher owns those actions.
+
+`tentacle requests review [--once]` is the separate maintainer path. Its
+read-only reviewer may inspect the pull request and write a merge/close decision
+but must not edit, run code, push or merge. The watcher performs protected-path
+checks, tests, merge, version bump, push and release only after approval.
+Automatic maintainer review is disabled unless `[requests].review_command` is
+configured. `tentacle requests retry ID` retries a failed phone request when
+the app supports it. Follow-up PR outcomes may update a final phone request;
+old apps that return 409 are retried for up to seven days.
+
 ## Notify the phone owner
 
 Use a normal notification when a long task finishes, when work needs the

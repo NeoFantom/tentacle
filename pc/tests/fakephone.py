@@ -50,6 +50,7 @@ class _Server(ThreadingHTTPServer):
         request_updates: list[tuple[str, str, str]],
         request_condition: threading.Condition,
         claim_conflicts: set[str],
+        request_features: dict[str, bool] | None,
         codes: list[dict[str, object]],
         codes_enabled: bool,
         code_condition: threading.Condition,
@@ -69,6 +70,7 @@ class _Server(ThreadingHTTPServer):
         self.request_updates = request_updates
         self.request_condition = request_condition
         self.claim_conflicts = claim_conflicts
+        self.request_features = request_features
         self.codes = codes
         self.codes_enabled = codes_enabled
         self.code_condition = code_condition
@@ -302,9 +304,7 @@ class _Handler(BaseHTTPRequestHandler):
         return path
 
     def _ping(self) -> None:
-        self._send_json(
-            200,
-            {
+        reply = {
                 "app": self.server.app,
                 "api": 1,
                 "version": "0.2.0",
@@ -314,8 +314,10 @@ class _Handler(BaseHTTPRequestHandler):
                 "all_files_access": True,
                 "time_ms": time.time_ns() // 1_000_000 + int(self.server.clock_offset_s * 1000),
                 "timezone": self.server.timezone,
-            },
-        )
+            }
+        if self.server.request_features is not None:
+            reply["requests"] = dict(self.server.request_features)
+        self._send_json(200, reply)
 
     def _ls(self, query: dict[str, list[str]]) -> None:
         self._require_no_unknown(query, {"path", "hidden"})
@@ -568,11 +570,12 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(message, str) or len(message) > 1000:
             raise _ApiError(400, "bad_request", "Invalid request message")
 
+        modern = self.server.request_features is not None
         allowed = {
             "new": {"working", "failed"},
             "working": {"done", "failed", "new"},
-            "done": set(),
-            "failed": set(),
+            "done": {"done", "failed"} if modern else set(),
+            "failed": {"done", "failed", "new"} if modern else set(),
         }
         with self.server.request_condition:
             request = next(
@@ -711,6 +714,8 @@ class FakePhone:
         notify_full_screen_allowed: bool = True,
         notify_shown: bool = True,
         notify_not_shown_reason: str = "notifications_disabled",
+        request_features: dict[str, bool] | None = None,
+        advertise_request_features: bool = True,
     ):
         self.root_dir = Path(root_dir)
         self.token = token
@@ -723,6 +728,10 @@ class FakePhone:
         self._request_logs: dict[str, bytes] = {}
         self.request_updates: list[tuple[str, str, str]] = []
         self.claim_conflicts: set[str] = set()
+        self.request_features = (
+            ({"followup": True, "retry": True} if request_features is None else request_features)
+            if advertise_request_features else None
+        )
         self._request_condition = threading.Condition()
         self._next_request = 1
         self._codes: list[dict[str, object]] = []
@@ -814,6 +823,12 @@ class FakePhone:
                 self._server.codes_enabled = enabled
             self._code_condition.notify_all()
 
+    def set_request_features(self, features: dict[str, bool] | None) -> None:
+        """Change advertised request capabilities; ``None`` simulates an old app."""
+        self.request_features = features
+        if self._server is not None:
+            self._server.request_features = features
+
     def set_notify_rate_limited(self, limited: bool) -> None:
         self.notify_options["rate_limited"] = limited
 
@@ -838,7 +853,7 @@ class FakePhone:
             ("127.0.0.1", 0), self.root_dir, self.token,
             self.timezone, self.clock_offset_s, self.app,
             self._requests, self._request_logs, self.request_updates,
-            self._request_condition, self.claim_conflicts,
+            self._request_condition, self.claim_conflicts, self.request_features,
             self._codes, self.codes_enabled, self._code_condition,
             self.code_queries,
             self._notifications, self.notify_requests, self._notify_condition,

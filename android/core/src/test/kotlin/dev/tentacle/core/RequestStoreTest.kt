@@ -40,23 +40,64 @@ class RequestStoreTest {
     }
 
     @Test
-    fun `update follows exactly the contract transitions`() {
+    fun `update validates status message and request id`() {
         var now = 1_000L
         val store = RequestStore(tempDir.toFile()) { now++ }
         val first = store.create("feature", "First")
         assertApi(400) { store.update(first.id, "invalid", "") }
         assertApi(400) { store.update(first.id, "working", "x".repeat(1001)) }
         assertApi(404) { store.update("r-missing", "working", "") }
-        assertApi(409) { store.update(first.id, "done", "too soon") }
-        assertEquals("working", store.update(first.id, "working", "Claimed").status)
-        assertEquals("new", store.update(first.id, "new", "Returned").status)
-        assertEquals("failed", store.update(first.id, "failed", "Could not do it").status)
-        assertApi(409) { store.update(first.id, "working", "retry") }
+    }
 
-        val done = store.create("feature", "Second")
-        store.update(done.id, "working", "")
-        assertEquals("Done", store.update(done.id, "done", "Done").message)
-        assertApi(409) { store.update(done.id, "failed", "late failure") }
+    @Test
+    fun `update allows exactly the contract transition matrix`() {
+        var now = 2_000L
+        val store = RequestStore(tempDir.toFile()) { now++ }
+        val statuses = listOf("new", "working", "done", "failed")
+        val allowed = setOf(
+            "new" to "working", "new" to "failed",
+            "working" to "done", "working" to "failed", "working" to "new",
+            "done" to "done", "done" to "failed",
+            "failed" to "done", "failed" to "failed", "failed" to "new",
+        )
+
+        statuses.forEach { from ->
+            statuses.forEach { to ->
+                val request = requestInStatus(store, from)
+                if (from to to in allowed) {
+                    val result = store.update(request.id, to, "message for $from to $to")
+                    assertEquals(to, result.status, "$from to $to")
+                    assertEquals(
+                        if (from == "failed" && to == "new") "" else "message for $from to $to",
+                        result.message,
+                        "$from to $to",
+                    )
+                    assertTrue(result.updatedMs > request.updatedMs, "$from to $to")
+                } else {
+                    assertApi(409, "$from to $to") { store.update(request.id, to, "forbidden") }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `final follow-up updates persist and notify listeners`() {
+        var now = 3_000L
+        val store = RequestStore(tempDir.toFile()) { now++ }
+        val request = requestInStatus(store, "done")
+        val observed = mutableListOf<AppRequest>()
+        store.observe { observed += store.list().first { it.id == request.id } }
+
+        val failed = store.update(request.id, "failed", "The maintainer closed it")
+        val done = store.update(request.id, "done", "The maintainer merged it")
+
+        assertEquals("failed", failed.status)
+        assertEquals("The maintainer closed it", failed.message)
+        assertEquals("done", done.status)
+        assertEquals("The maintainer merged it", done.message)
+        assertTrue(done.updatedMs > failed.updatedMs)
+        assertEquals(listOf(failed, done), observed)
+        assertEquals(done, RequestStore(tempDir.toFile()).list().first { it.id == request.id })
     }
 
     @Test
@@ -153,6 +194,34 @@ class RequestStoreTest {
     }
 
     @Test
+    fun `retry clears the failure and wakes awaitNew`() {
+        var now = 4_000L
+        val store = RequestStore(tempDir.toFile()) { now++ }
+        val request = requestInStatus(store, "failed")
+        val started = CountDownLatch(1)
+        var result: List<AppRequest> = emptyList()
+        val observed = mutableListOf<AppRequest>()
+        store.observe { observed += store.list().first { it.id == request.id } }
+        val waiter = thread {
+            started.countDown()
+            result = store.awaitNew(2_000)
+        }
+        assertTrue(started.await(1, TimeUnit.SECONDS))
+        Thread.sleep(50)
+        assertEquals(Thread.State.TIMED_WAITING, waiter.state)
+
+        val retried = store.update(request.id, "new", "must be discarded")
+
+        waiter.join(1_000)
+        assertFalse(waiter.isAlive)
+        assertEquals("new", retried.status)
+        assertEquals("", retried.message)
+        assertTrue(retried.updatedMs > request.updatedMs)
+        assertEquals(retried, result.first { it.id == request.id })
+        assertEquals(listOf(retried), observed)
+    }
+
+    @Test
     fun `listeners run outside the store lock and can be removed`() {
         val store = RequestStore(tempDir.toFile())
         val calls = AtomicInteger()
@@ -219,9 +288,22 @@ class RequestStoreTest {
         assertFalse(Files.exists(tempDir.resolve("${discarded.id}.log")))
     }
 
-    private fun assertApi(status: Int, block: () -> Unit) {
+    private fun requestInStatus(store: RequestStore, status: String): AppRequest {
+        val request = store.create("feature", "request for $status")
+        return when (status) {
+            "new" -> request
+            "working" -> store.update(request.id, "working", "Working")
+            "done" -> store.update(request.id, "working", "Working").let {
+                store.update(request.id, "done", "Done")
+            }
+            "failed" -> store.update(request.id, "failed", "Failed")
+            else -> error("Unknown status $status")
+        }
+    }
+
+    private fun assertApi(status: Int, message: String? = null, block: () -> Unit) {
         val error = assertThrows(ApiException::class.java, block)
-        assertEquals(status, error.status)
+        assertEquals(status, error.status, message)
     }
 
     private fun persistedRequest(id: String, time: Long): Map<String, Any> = mapOf(

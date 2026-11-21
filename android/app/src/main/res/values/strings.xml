@@ -73,6 +73,8 @@
     <string name="requests_send">Send</string>
     <string name="requests_bug">Upload log &amp; fix</string>
     <string name="requests_sent">Sent to your computer</string>
+    <string name="requests_retry">Try again</string>
+    <string name="requests_retried">Sent to your computer again</string>
     <string name="requests_invalid">Shorten the text to 1000 words or CJK characters and remove control characters.</string>
     <string name="requests_save_failed">Could not save the request. Try again.</string>
     <string name="requests_checked">Computer checked %1$s ago</string>
