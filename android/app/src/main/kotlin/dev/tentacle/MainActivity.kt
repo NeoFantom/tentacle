@@ -135,6 +135,11 @@ class MainActivity : Activity() {
     private lateinit var settingsBody: Expander
     private lateinit var portText: TextView
     private lateinit var boot: Switch
+    private lateinit var phoneNotificationsSwitch: Switch
+    private lateinit var phoneNotificationsOngoing: Switch
+    private lateinit var phoneNotificationsStatus: TextView
+    private lateinit var phoneNotificationsCount: TextView
+    private lateinit var phoneNotificationsHelp: LinearLayout
     private lateinit var codesSwitch: Switch
     private lateinit var urgentSwitch: Switch
     private lateinit var notifyHelp: LinearLayout
@@ -167,6 +172,7 @@ class MainActivity : Activity() {
             if (!requestRefreshActive) return
             refreshRequests()
             refreshCodes()
+            refreshPhoneNotifications()
             scroll.postDelayed(this, REQUEST_REFRESH_MS)
         }
     }
@@ -202,6 +208,10 @@ class MainActivity : Activity() {
         if (intent.hasExtra("urgent_allowed")) {
             settings.urgentAllowed = intent.getBooleanExtra("urgent_allowed", false)
             intent.removeExtra("urgent_allowed")
+        }
+        if (intent.hasExtra("phone_notifications_enabled")) {
+            settings.phoneNotificationsEnabled = intent.getBooleanExtra("phone_notifications_enabled", false)
+            intent.removeExtra("phone_notifications_enabled")
         }
         if (intent.hasExtra("codes_enabled")) {
             settings.codesEnabled = intent.getBooleanExtra("codes_enabled", false)
@@ -844,6 +854,7 @@ class MainActivity : Activity() {
         val body = settingsBody.body
         notifySection(body)
         codesSection(body)
+        phoneNotificationsSection(body)
         val portRow = row(body).apply { gravity = Gravity.CENTER_VERTICAL }
         portText = text(portRow, "", 15f).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
         button(portRow, getString(R.string.change), ButtonKind.OUTLINE) { changePort() }
@@ -998,6 +1009,119 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun phoneNotificationsSection(body: LinearLayout) {
+        phoneNotificationsSwitch = switch(body, getString(R.string.phone_notifications_enable),
+            settings.phoneNotificationsEnabled) { enabled ->
+            if (!enabled) {
+                settings.phoneNotificationsEnabled = false
+                refresh()
+            } else {
+                updating = true
+                phoneNotificationsSwitch.isChecked = false
+                updating = false
+                AlertDialog.Builder(this).setTitle(R.string.phone_notifications_enable)
+                    .setMessage(R.string.phone_notifications_warning)
+                    .setNegativeButton(R.string.cancel, null)
+                    .setPositiveButton(R.string.codes_turn_on) { _, _ ->
+                        settings.phoneNotificationsEnabled = true
+                        refresh()
+                        if (!notificationCodeAccess()) explainPhoneNotificationsAccess()
+                    }.show()
+            }
+        }
+        phoneNotificationsStatus = text(body, "", 14f, secondary = true)
+        text(body, getString(R.string.phone_notifications_hint), 13f, secondary = true)
+        phoneNotificationsOngoing = switch(body, getString(R.string.phone_notifications_include_ongoing),
+            settings.phoneNotificationsIncludeOngoing) { settings.phoneNotificationsIncludeOngoing = it }
+        phoneNotificationsHelp = column().also { body.addView(it) }
+        text(phoneNotificationsHelp, getString(R.string.phone_notifications_access_help), 13f, secondary = true)
+        button(phoneNotificationsHelp, getString(R.string.codes_open_access), ButtonKind.OUTLINE, fill = true) {
+            explainPhoneNotificationsAccess()
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            text(phoneNotificationsHelp, getString(R.string.codes_restricted_help), 13f, secondary = true)
+            button(phoneNotificationsHelp, getString(R.string.codes_app_info), ButtonKind.OUTLINE, fill = true) {
+                launch(appDetails())
+            }
+        }
+        if (isXiaomi()) text(phoneNotificationsHelp,
+            getString(R.string.phone_notifications_xiaomi_help), 13f, secondary = true)
+        button(body, getString(R.string.phone_notifications_excluded_apps), ButtonKind.OUTLINE, fill = true) {
+            chooseExcludedNotificationApps()
+        }
+        phoneNotificationsCount = text(body, "", 14f, secondary = true)
+        button(body, getString(R.string.phone_notifications_clear), ButtonKind.OUTLINE, fill = true) {
+            dev.tentacle.feed.PhoneNotificationStores.execute(this) { store ->
+                store.clear()
+                AppLog.append("Phone notifications cleared")
+                runOnUiThread { if (!isDestroyed) refreshPhoneNotifications() }
+            }
+        }
+    }
+
+    private fun explainPhoneNotificationsAccess() {
+        val message = buildList {
+            add(getString(R.string.phone_notifications_access_help))
+            if (Build.VERSION.SDK_INT >= 33) add(getString(R.string.codes_restricted_help))
+            if (isXiaomi()) add(getString(R.string.phone_notifications_xiaomi_help))
+        }.joinToString("\n\n")
+        AlertDialog.Builder(this).setTitle(R.string.phone_notifications_needs_access).setMessage(message)
+            .setNegativeButton(R.string.cancel, null)
+            .setNeutralButton(R.string.codes_app_info) { _, _ -> launch(appDetails()) }
+            .setPositiveButton(R.string.codes_open_access) { _, _ ->
+                launch(Intent(SystemSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS), appDetails())
+            }.show()
+    }
+
+    private fun chooseExcludedNotificationApps() {
+        dev.tentacle.feed.PhoneNotificationStores.execute(this) { store ->
+            val apps = store.seenApps().entries.sortedBy { it.value.lowercase(java.util.Locale.ROOT) }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (apps.isEmpty()) {
+                    AlertDialog.Builder(this).setTitle(R.string.phone_notifications_excluded_apps)
+                        .setMessage(R.string.phone_notifications_no_apps)
+                        .setPositiveButton(android.R.string.ok, null).show()
+                } else {
+                    val excluded = settings.phoneNotificationsExcludedPackages.toMutableSet()
+                    // Include package names to distinguish apps with the same label.
+                    val labels = apps.map { "${it.value} (${it.key})" }.toTypedArray()
+                    AlertDialog.Builder(this).setTitle(R.string.phone_notifications_excluded_apps)
+                        .setMultiChoiceItems(labels, apps.map { it.key in excluded }.toBooleanArray()) { _, index, checked ->
+                            if (checked) excluded.add(apps[index].key) else excluded.remove(apps[index].key)
+                        }
+                        .setNegativeButton(R.string.cancel, null)
+                        .setPositiveButton(android.R.string.ok) { _, _ ->
+                            settings.phoneNotificationsExcludedPackages = excluded
+                        }.show()
+                }
+            }
+        }
+    }
+
+    private fun refreshPhoneNotifications() {
+        if (!::phoneNotificationsStatus.isInitialized) return
+        val enabled = settings.phoneNotificationsEnabled
+        val access = notificationCodeAccess()
+        phoneNotificationsStatus.setText(when {
+            !enabled -> R.string.phone_notifications_off
+            !access -> R.string.phone_notifications_needs_access
+            else -> R.string.phone_notifications_listening
+        })
+        phoneNotificationsHelp.visibility = if (enabled && !access) View.VISIBLE else View.GONE
+        updating = true
+        phoneNotificationsSwitch.isChecked = enabled
+        phoneNotificationsOngoing.isChecked = settings.phoneNotificationsIncludeOngoing
+        phoneNotificationsOngoing.isEnabled = enabled
+        updating = false
+        dev.tentacle.feed.PhoneNotificationStores.execute(this) { store ->
+            val count = store.count()
+            runOnUiThread {
+                if (!isDestroyed) phoneNotificationsCount.text = getString(R.string.phone_notifications_count, count)
+            }
+        }
+    }
+
     private fun smsCodeAccess(): Boolean =
         checkSelfPermission(Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
 
@@ -1146,6 +1270,7 @@ class MainActivity : Activity() {
         refreshTunnel(state, tunnel)
         refreshUpdates()
         refreshCodes()
+        refreshPhoneNotifications()
         portText.text = getString(R.string.port_value, settings.port)
         refreshNotify()
         updating = true
@@ -1160,6 +1285,10 @@ class MainActivity : Activity() {
             (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
         if (!notificationsAllowed) {
             attentionItem(R.string.attention_notifications, R.string.attention_notifications_help, R.string.fix_allow) { requestNotifications() }
+        }
+        if (settings.phoneNotificationsEnabled && !notificationCodeAccess()) {
+            attentionItem(R.string.phone_notifications_needs_access, R.string.phone_notifications_access_help,
+                R.string.codes_open_access) { explainPhoneNotificationsAccess() }
         }
         if (!getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) {
             attentionItem(R.string.attention_battery, R.string.attention_battery_help, R.string.fix_allow) {

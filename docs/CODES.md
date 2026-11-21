@@ -4,6 +4,8 @@ Tentacle can expose short-lived verification codes from the phone to its paired
 computer. The feature is off by default and is intended for an owner-controlled
 agent completing a login or account verification. It is not a general message
 API: only a code, sender, short source snippet and receipt metadata are exposed.
+For the separate, owner-enabled feed of ordinary phone notifications, see
+[Phone notification sharing](NOTIFICATIONS.md).
 
 ## Capture and safety
 

@@ -150,6 +150,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._requests(query)
             elif parsed.path == "/v1/codes":
                 self._codes(query)
+            elif parsed.path == "/v1/notifications":
+                self._phone_notifications(query)
             elif re.fullmatch(r"/v1/notify/[A-Za-z0-9_-]{1,64}", parsed.path):
                 self._notification(parsed.path.split("/")[-1], query)
             elif re.fullmatch(r"/v1/requests/[A-Za-z0-9_-]{1,64}/log", parsed.path):
@@ -317,6 +319,8 @@ class _Handler(BaseHTTPRequestHandler):
             }
         if self.server.request_features is not None:
             reply["requests"] = dict(self.server.request_features)
+        if self.server.phone_feed.notifications_supported:
+            reply["phone_notifications"] = {"enabled": self.server.phone_feed.notifications_enabled}
         self._send_json(200, reply)
 
     def _ls(self, query: dict[str, list[str]]) -> None:
@@ -469,6 +473,37 @@ class _Handler(BaseHTTPRequestHandler):
         codes.sort(key=lambda item: int(item["received_ms"]))
         now_ms = time.time_ns() // 1_000_000 + int(self.server.clock_offset_s * 1000)
         self._send_json(200, {"codes": codes, "now_ms": now_ms, "enabled": enabled})
+
+    def _phone_notifications(self, query: dict[str, list[str]]) -> None:
+        feed = self.server.phone_feed
+        if not feed.notifications_supported:
+            raise _ApiError(404, "not_found", "Endpoint not found")
+        self._require_no_unknown(query, {"since", "wait", "app", "limit"})
+        since = self._int(query, "since", 0, minimum=0)
+        wait = self._int(query, "wait", 0, minimum=0, maximum=60)
+        limit = self._int(query, "limit", 500, minimum=1, maximum=500)
+        app = self._one(query, "app", "")
+        feed.notification_queries.append(dict(since=since, wait=wait, app=app, limit=limit))
+        deadline = time.monotonic() + wait
+        with feed._phone_notification_condition:
+            def selected():
+                return sorted((dict(item) for item in feed._phone_notifications
+                               if item["updated_ms"] > since
+                               and (not app or item["package"] == app)),
+                              key=lambda item: item["updated_ms"], reverse=True)[:limit]
+
+            while feed.notifications_enabled and wait and not selected():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                feed._phone_notification_condition.wait(remaining)
+            enabled = feed.notifications_enabled
+            if not enabled and feed.notifications_off_403:
+                raise _ApiError(403, "disabled", "Sharing is off")
+            entries = selected() if enabled else []
+        self._send_json(200, {"notifications": entries, "enabled": enabled,
+                             "now_ms": time.time_ns() // 1_000_000
+                             + int(feed.clock_offset_s * 1000)})
 
     def _notification(self, notification_id: str, query: dict[str, list[str]]) -> None:
         self._require_no_unknown(query, {"wait"})
@@ -716,6 +751,9 @@ class FakePhone:
         notify_not_shown_reason: str = "notifications_disabled",
         request_features: dict[str, bool] | None = None,
         advertise_request_features: bool = True,
+        notifications_enabled: bool = True,
+        notifications_supported: bool = True,
+        notifications_off_403: bool = False,
     ):
         self.root_dir = Path(root_dir)
         self.token = token
@@ -723,6 +761,14 @@ class FakePhone:
         self.clock_offset_s = clock_offset_s
         self.app = app
         self.codes_enabled = codes_enabled
+        self.notifications_enabled = notifications_enabled
+        self.notifications_supported = notifications_supported
+        self.notifications_off_403 = notifications_off_403
+        self._phone_notifications: list[dict[str, object]] = []
+        self._next_phone_notification = 0
+        self._phone_notification_cursor = 0
+        self._phone_notification_condition = threading.Condition()
+        self.notification_queries: list[dict[str, object]] = []
         self.url = ""
         self._requests: list[dict[str, object]] = []
         self._request_logs: dict[str, bytes] = {}
@@ -823,6 +869,49 @@ class FakePhone:
                 self._server.codes_enabled = enabled
             self._code_condition.notify_all()
 
+    def add_phone_notification(self, **overrides: object) -> dict[str, object]:
+        """Post or replace a key and wake readers using the change cursor."""
+        now = time.time_ns() // 1_000_000 + int(self.clock_offset_s * 1000)
+        with self._phone_notification_condition:
+            item: dict[str, object] = {
+                "key": f"n-{self._next_phone_notification}", "package": "com.example.chat",
+                "app": "Example Chat", "title": "New message", "text": "Hello",
+                "sub_text": "", "category": "msg", "posted_ms": now,
+                "ongoing": False, "removed_ms": None,
+            }
+            self._next_phone_notification += 1
+            item.update(overrides)
+            if "updated_ms" not in item:
+                item["updated_ms"] = max(item["posted_ms"], item["removed_ms"] or 0,
+                                         self._phone_notification_cursor + 1)
+            self._phone_notification_cursor = max(self._phone_notification_cursor, item["updated_ms"])
+            self._phone_notifications[:] = sorted(
+                [entry for entry in self._phone_notifications if entry["key"] != item["key"]] + [item],
+                key=lambda entry: entry["updated_ms"], reverse=True,
+            )[:500]
+            self._phone_notification_condition.notify_all()
+            return dict(item)
+
+    def remove_phone_notification(self, key: str, *, removed_ms: int | None = None,
+                                  updated_ms: int | None = None) -> dict[str, object]:
+        """Keep a removed entry in the feed and wake waiting readers."""
+        now = time.time_ns() // 1_000_000 + int(self.clock_offset_s * 1000)
+        with self._phone_notification_condition:
+            item = next((dict(entry) for entry in self._phone_notifications if entry["key"] == key), None)
+            if item is None:
+                raise KeyError(key)
+            item["removed_ms"] = now if removed_ms is None else removed_ms
+            item["updated_ms"] = (max(item["removed_ms"], self._phone_notification_cursor + 1)
+                                  if updated_ms is None else updated_ms)
+            return self.add_phone_notification(**item)
+
+    def set_notifications_enabled(self, enabled: bool) -> None:
+        with self._phone_notification_condition:
+            self.notifications_enabled = enabled
+            if not enabled:
+                self._phone_notifications.clear()
+            self._phone_notification_condition.notify_all()
+
     def set_request_features(self, features: dict[str, bool] | None) -> None:
         """Change advertised request capabilities; ``None`` simulates an old app."""
         self.request_features = features
@@ -860,6 +949,7 @@ class FakePhone:
             self.notify_options,
         )
         host, port = self._server.server_address[:2]
+        self._server.phone_feed = self
         self.url = f"http://{host}:{port}"
         self._thread = threading.Thread(target=self._server.serve_forever, name="fake-phone", daemon=True)
         self._thread.start()

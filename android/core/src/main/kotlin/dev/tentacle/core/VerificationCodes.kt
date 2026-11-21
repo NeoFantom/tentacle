@@ -37,6 +37,9 @@ object VerificationCodes {
     fun parse(text: String, fallbackSender: String = ""): VerificationCodeMatch? =
         inspect(text, fallbackSender)?.takeUnless { it.blockedPayment }
 
+    /** Shared safety classification for content that must not be relayed verbatim. */
+    fun isPaymentMessage(text: String): Boolean = payment.containsMatchIn(text)
+
     /** Includes blocked matches so callers can record a code-free safety event. */
     fun inspect(text: String, fallbackSender: String = ""): VerificationCodeMatch? {
         val keywords = keyword.findAll(text).toList()
@@ -62,7 +65,7 @@ object VerificationCodes {
             sender = rawSender.replace(chosen.value, "", ignoreCase = true)
                 .let { sender -> spacedCode?.let { sender.replace(it, "", ignoreCase = true) } ?: sender }
                 .trim(' ', '-', ':', '：', ',', '，'),
-            blockedPayment = payment.containsMatchIn(text),
+            blockedPayment = isPaymentMessage(text),
         )
     }
 

@@ -277,4 +277,20 @@
     <string name="notify_test_not_shown">测试通知未显示，请检查通知权限及通知类别设置。</string>
     <string name="notify_test_no_full_screen">测试通知已发送，但尚未允许全屏提醒。</string>
     <string name="notify_test_failed">测试通知发送失败，请稍后重试。测试通知也有发送频率限制。</string>
+
+    <!-- Phone notifications shared with the computer -->
+    <string name="notification_access_title">Tentacle 通知使用权</string>
+    <string name="phone_notifications_enable">把手机通知共享给电脑</string>
+    <string name="phone_notifications_warning">电脑和电脑上的 AI 智能体将能读取你的通知。涉及支付等资金操作的消息会被隐藏。通知只在这台手机的应用私有空间中保留，最长 3 天。</string>
+    <string name="phone_notifications_hint">最多保留最近 500 条通知，最长 3 天；关闭共享会清空记录。电脑读取时，文件服务须保持运行。Android 15 及以上版本可能会隐藏通知中的验证码。</string>
+    <string name="phone_notifications_include_ongoing">包含常驻通知</string>
+    <string name="phone_notifications_excluded_apps">排除的应用</string>
+    <string name="phone_notifications_no_apps">开启共享并收到通知后，相关应用会出现在这里。勾选后将不再收集该应用的新通知。</string>
+    <string name="phone_notifications_clear">清空已保存的通知</string>
+    <string name="phone_notifications_count">已保存 %1$d 条通知</string>
+    <string name="phone_notifications_access_help">请授予 Tentacle 通知使用权，才能把手机通知共享给电脑。</string>
+    <string name="phone_notifications_xiaomi_help">小米、Redmi 和 POCO 如果无法开启通知使用权，请先打开应用信息 → 右上角 ⋮ → 允许受限设置，再返回通知使用权设置。</string>
+    <string name="phone_notifications_off">手机通知共享未开启</string>
+    <string name="phone_notifications_needs_access">需要通知使用权</string>
+    <string name="phone_notifications_listening">正在接收手机通知</string>
 </resources>

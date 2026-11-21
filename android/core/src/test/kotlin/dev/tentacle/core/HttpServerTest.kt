@@ -27,6 +27,7 @@ class HttpServerTest {
     private lateinit var requests: RequestStore
     private lateinit var codes: CodeStore
     private lateinit var notifications: NotifyStore
+    private lateinit var phoneNotifications: PhoneNotificationStore
     private val loopback: String = InetAddress.getLoopbackAddress().hostAddress
     private var token = "test-token"
 
@@ -35,6 +36,7 @@ class HttpServerTest {
         root = Files.createDirectory(tempDir.resolve("primary"))
         requests = RequestStore(tempDir.resolve("requests").toFile())
         codes = CodeStore()
+        phoneNotifications = PhoneNotificationStore(tempDir.resolve("phone-notifications").toFile())
         notifications = NotifyStore(
             prepare = { NotifyDelivery(it.requestedLevel) },
             deliver = { _, delivery -> delivery },
@@ -47,6 +49,7 @@ class HttpServerTest {
             requestStore = requests,
             codeStore = codes,
             notifyStore = notifications,
+            phoneNotificationStore = phoneNotifications,
             info = {
                 PingInfo(
                     version = "0.1.0-test",
@@ -56,6 +59,7 @@ class HttpServerTest {
                     roots = listOf(StorageRoot("primary", root.toFile(), "Internal")),
                     timezone = "Asia/Shanghai",
                     requests = linkedMapOf("followup" to true, "retry" to true),
+                    phoneNotifications = linkedMapOf("enabled" to phoneNotifications.isEnabled),
                 )
             },
         )
@@ -116,6 +120,7 @@ class HttpServerTest {
             "/v1/find",
             "/v1/file?path=one.txt",
             "/v1/codes?wait=0",
+            "/v1/notifications?wait=0",
         )
 
         targets.forEach { target ->
@@ -152,6 +157,7 @@ class HttpServerTest {
         assertTrue(Regex("\\\"time_ms\\\":\\d+").containsMatchIn(response.text))
         assertTrue(response.text.contains("\"timezone\":\"Asia/Shanghai\""))
         assertTrue(response.text.contains("\"requests\":{\"followup\":true,\"retry\":true}"))
+        assertTrue(response.text.contains("\"phone_notifications\":{\"enabled\":false}"))
         assertFalse(response.text.contains("\"tailnet\""))
     }
 
@@ -202,6 +208,15 @@ class HttpServerTest {
             mapOf("followup" to true, "retry" to true),
             info.toJson(5)["requests"],
         )
+    }
+
+    @Test
+    fun `ping info adds phone notification state only when supplied`() {
+        val withoutState = PingInfo("0.3.1", "Test Device", 35, true, emptyList(), "UTC")
+        assertFalse(withoutState.toJson(5).containsKey("phone_notifications"))
+
+        val info = withoutState.copy(phoneNotifications = linkedMapOf("enabled" to true))
+        assertEquals(mapOf("enabled" to true), info.toJson(5)["phone_notifications"])
     }
 
     @Test
@@ -587,6 +602,173 @@ class HttpServerTest {
     }
 
     @Test
+    fun `phone notifications endpoint reports disabled and returns filtered newest entries`() {
+        val started = System.nanoTime()
+        val disabled = Json.parse(request("GET", "/v1/notifications?wait=60").text) as Map<*, *>
+        val elapsedMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+        assertEquals(false, disabled["enabled"])
+        assertEquals(emptyList<Any>(), disabled["notifications"])
+        assertTrue((disabled["now_ms"] as Number).toLong() > 0)
+        assertTrue(elapsedMs < 1_000, "disabled wait took ${elapsedMs}ms")
+
+        phoneNotifications.setEnabled(true)
+        val now = System.currentTimeMillis()
+        val first = phoneNotifications.capture(PhoneNotificationInput(
+            key = "mail-1", packageName = "com.example.mail", appLabel = "Mail",
+            title = "First", text = "Hello", subText = "Inbox", category = "msg",
+            postTimeMs = now - 1_000,
+        ))!!
+        val second = phoneNotifications.capture(PhoneNotificationInput(
+            key = "chat-1", packageName = "com.example.chat", appLabel = "Chat",
+            title = "Second", bigText = "Expanded", postTimeMs = now, ongoing = false,
+        ))!!
+
+        val response = request("GET", "/v1/notifications?since=${first.updatedMs - 1}&limit=1")
+        assertEquals(200, response.status)
+        val body = Json.parse(response.text) as Map<*, *>
+        assertEquals(true, body["enabled"])
+        val entry = (body["notifications"] as List<*>).single() as Map<*, *>
+        assertEquals(second.key, entry["key"])
+        assertEquals("com.example.chat", entry["package"])
+        assertEquals("Chat", entry["app"])
+        assertEquals("Second", entry["title"])
+        assertEquals("Expanded", entry["text"])
+        assertEquals("", entry["sub_text"])
+        assertEquals("", entry["category"])
+        assertEquals(second.postTimeMs, (entry["posted_ms"] as Number).toLong())
+        assertEquals(false, entry["ongoing"])
+        assertEquals(null, entry["removed_ms"])
+        assertEquals(second.updatedMs, (entry["updated_ms"] as Number).toLong())
+        assertFalse(entry.containsKey("app_label"))
+        assertFalse(entry.containsKey("post_time_ms"))
+
+        val mail = Json.parse(request("GET", "/v1/notifications?app=com.example.mail").text) as Map<*, *>
+        assertEquals(listOf(first.key), (mail["notifications"] as List<*>).map { (it as Map<*, *>)["key"] })
+        val none = Json.parse(request("GET", "/v1/notifications?since=${second.updatedMs}").text) as Map<*, *>
+        assertEquals(emptyList<Any>(), none["notifications"])
+    }
+
+    @Test
+    fun `phone notifications long poll wakes on capture removal and disabling`() {
+        phoneNotifications.setEnabled(true)
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            var since = System.currentTimeMillis()
+            var pending = pool.submit<HttpResponse> {
+                request("GET", "/v1/notifications?since=$since&wait=3&app=com.example.chat")
+            }
+            Thread.sleep(100)
+            assertFalse(pending.isDone)
+            val captured = phoneNotifications.capture(PhoneNotificationInput(
+                key = "chat", packageName = "com.example.chat", appLabel = "Chat",
+                text = "New message", postTimeMs = System.currentTimeMillis(),
+            ))!!
+            assertTrue(pending.get(1, java.util.concurrent.TimeUnit.SECONDS).text.contains("New message"))
+
+            since = captured.updatedMs
+            pending = pool.submit<HttpResponse> { request("GET", "/v1/notifications?since=$since&wait=3") }
+            Thread.sleep(100)
+            val removed = phoneNotifications.markRemoved("chat")!!
+            val removedBody = Json.parse(pending.get(1, java.util.concurrent.TimeUnit.SECONDS).text) as Map<*, *>
+            val removedEntry = (removedBody["notifications"] as List<*>).single() as Map<*, *>
+            assertEquals(removed.removedMs, (removedEntry["removed_ms"] as Number).toLong())
+
+            since = removed.updatedMs
+            pending = pool.submit<HttpResponse> { request("GET", "/v1/notifications?since=$since&wait=3") }
+            Thread.sleep(100)
+            phoneNotifications.setEnabled(false)
+            val disabled = Json.parse(pending.get(1, java.util.concurrent.TimeUnit.SECONDS).text) as Map<*, *>
+            assertEquals(false, disabled["enabled"])
+            assertEquals(emptyList<Any>(), disabled["notifications"])
+        } finally {
+            pool.shutdownNow()
+        }
+
+        listOf(
+            "/v1/notifications?wait=-1", "/v1/notifications?wait=61", "/v1/notifications?wait=oops",
+            "/v1/notifications?since=-1", "/v1/notifications?since=oops",
+            "/v1/notifications?limit=0", "/v1/notifications?limit=501", "/v1/notifications?limit=oops",
+        ).forEach { target -> assertEquals(400, request("GET", target).status, target) }
+    }
+
+    @Test
+    fun `phone notification polls share the long poll cap and keep file requests available`() {
+        codes.setEnabled(true)
+        phoneNotifications.setEnabled(true)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+        try {
+            val since = System.currentTimeMillis()
+            val codePoll = pool.submit<HttpResponse> { request("GET", "/v1/codes?since=$since&wait=3") }
+            val notificationPoll = pool.submit<HttpResponse> {
+                request("GET", "/v1/notifications?since=$since&wait=3")
+            }
+            Thread.sleep(100)
+            assertFalse(codePoll.isDone)
+            assertFalse(notificationPoll.isDone)
+
+            val extra = pool.submit<HttpResponse> { request("GET", "/v1/notifications?since=$since&wait=3") }
+            assertEquals(200, extra.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
+            assertEquals(200, request("GET", "/v1/ls").status)
+
+            codes.capture("code 334455", "Service", "notification")
+            phoneNotifications.capture(PhoneNotificationInput(
+                key = "wake", packageName = "com.example.chat", appLabel = "Chat",
+                text = "Wake", postTimeMs = System.currentTimeMillis(),
+            ))
+            assertEquals(200, codePoll.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
+            assertEquals(200, notificationPoll.get(1, java.util.concurrent.TimeUnit.SECONDS).status)
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `phone notifications endpoint is absent without a configured store`() {
+        val absent = HttpServer(
+            port = 0,
+            bind = loopback,
+            tokenProvider = { token },
+            api = FileApi(listOf(StorageRoot("primary", root.toFile(), "Internal"))),
+            info = { PingInfo("test", "device", 35, true, emptyList(), "UTC") },
+        )
+        try {
+            absent.start()
+            assertEquals(404, request("GET", "/v1/notifications", port = absent.boundPort).status)
+        } finally {
+            absent.stop()
+        }
+    }
+
+    @Test
+    fun `phone notification store provider is resolved lazily on an HTTP worker`() {
+        val provided = PhoneNotificationStore(tempDir.resolve("provided-notifications").toFile())
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val threads = java.util.concurrent.LinkedBlockingQueue<String>()
+        val lazyServer = HttpServer(
+            port = 0,
+            bind = loopback,
+            tokenProvider = { token },
+            api = FileApi(listOf(StorageRoot("primary", root.toFile(), "Internal"))),
+            info = { PingInfo("test", "device", 35, true, emptyList(), "UTC") },
+            phoneNotificationStoreProvider = {
+                calls.incrementAndGet()
+                threads.add(Thread.currentThread().name)
+                provided
+            },
+        )
+        try {
+            assertEquals(0, calls.get())
+            lazyServer.start()
+            assertEquals(0, calls.get())
+            assertEquals(200, request("GET", "/v1/notifications", port = lazyServer.boundPort).status)
+            assertEquals(1, calls.get())
+            assertTrue(threads.remove().startsWith("tentacle-http-worker"))
+        } finally {
+            lazyServer.stop()
+        }
+    }
+
+    @Test
     fun `codes long poll wakes for a code and for disabling`() {
         codes.setEnabled(true)
         val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -756,8 +938,9 @@ class HttpServerTest {
         bearer: String? = null,
         headers: Map<String, String> = emptyMap(),
         body: String = "",
+        port: Int = server.boundPort,
     ): HttpResponse {
-        Socket(loopback, server.boundPort).use { socket ->
+        Socket(loopback, port).use { socket ->
             socket.soTimeout = 5_000
             val bodyBytes = body.toByteArray(StandardCharsets.UTF_8)
             val request = buildString {

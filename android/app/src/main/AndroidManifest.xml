@@ -44,7 +44,7 @@
                 android:value="Local file server and request status API for the owner's own computer" />
         </service>
         <service android:name=".codes.CodeNotificationListener"
-            android:label="@string/codes_title"
+            android:label="@string/notification_access_title"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
             android:exported="true">
             <intent-filter>

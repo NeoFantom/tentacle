@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tentacle · Phone notifications</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f6f9;
+      --panel: #ffffff;
+      --text: #17202b;
+      --muted: #667180;
+      --line: #dce2ea;
+      --accent: #246bfe;
+      --accent-soft: #e8f0ff;
+      --unread: #f0f6ff;
+      --shadow: 0 10px 28px rgba(31, 42, 58, .08);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101318;
+        --panel: #181d24;
+        --text: #ecf0f5;
+        --muted: #9aa5b4;
+        --line: #2b333e;
+        --accent: #79a3ff;
+        --accent-soft: #203052;
+        --unread: #1b2941;
+        --shadow: 0 12px 30px rgba(0, 0, 0, .28);
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .shell { width: min(1120px, 100%); margin-inline: auto; padding: 0 24px 64px; }
+    header { padding-top: 28px; }
+    .brand { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+    h1 { margin: 0; font-size: clamp(24px, 4vw, 34px); letter-spacing: -.025em; }
+    .eyebrow { color: var(--muted); font-size: 13px; }
+    [role="tablist"] { display: flex; gap: 6px; margin-top: 24px; border-bottom: 1px solid var(--line); }
+    [role="tab"] {
+      appearance: none; border: 0; border-bottom: 3px solid transparent; background: transparent;
+      color: var(--muted); padding: 10px 12px; font: inherit; font-weight: 650; cursor: default;
+    }
+    [role="tab"][aria-selected="true"] { color: var(--text); border-color: var(--accent); }
+    .status {
+      display: flex; align-items: center; gap: 9px; min-height: 24px; margin: 20px 0 16px;
+      color: var(--muted); font-size: 14px;
+    }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #9099a7; flex: none; }
+    .dot.connected { background: #1d9b61; }
+    .dot.off, .dot.unsupported { background: #d28a19; }
+    .dot.unreachable { background: #d34a4a; }
+    .filters {
+      display: grid; grid-template-columns: minmax(180px, .7fr) minmax(240px, 1.3fr); gap: 12px;
+      padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+      box-shadow: var(--shadow);
+    }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; font-weight: 650; }
+    input, select {
+      width: 100%; min-height: 42px; border: 1px solid var(--line); border-radius: 10px;
+      background: var(--bg); color: var(--text); padding: 8px 11px; font: inherit;
+    }
+    input:focus, select:focus { outline: 3px solid var(--accent-soft); border-color: var(--accent); }
+    .results { margin-top: 28px; }
+    .group { margin-top: 28px; }
+    .group h2 { margin: 0 0 10px; color: var(--muted); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
+    .list { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
+    .notification {
+      position: relative; display: grid; grid-template-columns: 126px minmax(0, 1fr); gap: 16px;
+      padding: 15px 17px; background: var(--panel); border: 1px solid var(--line);
+      border-radius: 13px; box-shadow: 0 3px 12px rgba(31, 42, 58, .045);
+    }
+    .notification.unread { background: var(--unread); border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); }
+    .notification.unread::before {
+      content: ""; position: absolute; left: -4px; top: 19px; width: 7px; height: 7px;
+      border-radius: 50%; background: var(--accent);
+    }
+    .notification.removed { opacity: .54; }
+    .removed-label {
+      display: inline-block; margin-top: 7px; padding: 2px 7px; border: 1px solid var(--line);
+      border-radius: 999px; color: var(--muted); font-size: 11px; font-weight: 700;
+      letter-spacing: .04em; text-transform: uppercase;
+    }
+    .meta { min-width: 0; }
+    .app { overflow: hidden; color: var(--accent); font-weight: 720; text-overflow: ellipsis; white-space: nowrap; }
+    time { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .content { min-width: 0; }
+    .title { margin: 0; font-size: 15px; font-weight: 720; overflow-wrap: anywhere; }
+    .text { margin: 3px 0 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .subtext { margin: 4px 0 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .empty { padding: 52px 20px; text-align: center; color: var(--muted); }
+    @media (max-width: 620px) {
+      .shell { padding-inline: 14px; }
+      header { padding-top: 20px; }
+      .brand { align-items: flex-start; flex-direction: column; gap: 3px; }
+      .filters { grid-template-columns: 1fr; }
+      .notification { grid-template-columns: 1fr; gap: 7px; padding: 14px; }
+      time { display: inline; margin: 0 0 0 7px; }
+      .app, time { vertical-align: baseline; }
+      .app { display: inline; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <h1>Phone notifications</h1>
+        <span class="eyebrow">Tentacle local viewer</span>
+      </div>
+      <nav role="tablist" aria-label="Views">
+        <button id="notifications-tab" type="button" role="tab" aria-selected="true" aria-controls="notifications-panel">Notifications</button>
+      </nav>
+    </header>
+    <main id="notifications-panel" role="tabpanel" aria-labelledby="notifications-tab">
+      <div class="status" aria-live="polite">
+        <span id="status-dot" class="dot"></span>
+        <span id="status-text">Connecting to the phone…</span>
+      </div>
+      <section class="filters" aria-label="Notification filters">
+        <label>App
+          <select id="app-filter"><option value="">All apps</option></select>
+        </label>
+        <label>Search
+          <input id="search" type="search" autocomplete="off" placeholder="Search app, title, or text">
+        </label>
+      </section>
+      <section id="results" class="results" aria-label="Phone notifications" aria-live="polite"></section>
+    </main>
+  </div>
+  <script>
+    "use strict";
+    const key = new URLSearchParams(location.search).get("k") || "";
+    const headers = {"X-Tentacle-Key": key};
+    const results = document.getElementById("results");
+    const statusText = document.getElementById("status-text");
+    const statusDot = document.getElementById("status-dot");
+    const appFilter = document.getElementById("app-filter");
+    const search = document.getElementById("search");
+    const byKey = new Map();
+    const rowsByKey = new Map();
+    const displayOrder = new Map();
+    const unreadKeys = new Set();
+    let nextOrder = 0;
+    const lastViewedKey = "tentacle.notifications.lastViewed";
+    function storedLastViewed() {
+      try { return Number(localStorage.getItem(lastViewedKey)) || Date.now(); }
+      catch (_) { return Date.now(); }
+    }
+    function rememberViewed() {
+      try { localStorage.setItem(lastViewedKey, String(Date.now())); }
+      catch (_) { /* Private modes can disable storage; viewing still works. */ }
+    }
+    const viewedBefore = storedLastViewed();
+    rememberViewed();
+    let cursor = null;
+    let stopped = false;
+
+    function node(tag, className, text) {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text !== undefined) element.textContent = text;
+      return element;
+    }
+
+    function setStatus(payload) {
+      const state = payload.status || "unreachable";
+      statusDot.className = "dot " + state;
+      statusText.textContent = payload.message || "Phone status unavailable.";
+    }
+
+    function dayGroup(ms) {
+      const date = new Date(ms);
+      const today = new Date();
+      const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+      const startYesterday = startToday - 86400000;
+      if (date.getTime() >= startToday) return "Today";
+      if (date.getTime() >= startYesterday) return "Yesterday";
+      return "Earlier";
+    }
+
+    function refreshApps() {
+      const selected = appFilter.value;
+      const apps = new Map();
+      for (const item of byKey.values()) apps.set(item.package, item.app || item.package);
+      const sorted = [...apps].sort((a, b) => a[1].localeCompare(b[1]));
+      appFilter.replaceChildren(new Option("All apps", ""));
+      for (const [pkg, label] of sorted) appFilter.append(new Option(label, pkg));
+      appFilter.value = apps.has(selected) ? selected : "";
+    }
+
+    function matches(item) {
+      if (appFilter.value && item.package !== appFilter.value) return false;
+      const needle = search.value.trim().toLocaleLowerCase();
+      if (!needle) return true;
+      return [item.app, item.title, item.text]
+        .some(value => String(value || "").toLocaleLowerCase().includes(needle));
+    }
+
+    function render() {
+      const items = [...byKey.values()].filter(matches)
+        .sort((a, b) => displayOrder.get(b.key) - displayOrder.get(a.key));
+      if (!items.length) {
+        results.replaceChildren(node("div", "empty", "No matching notifications."));
+        return;
+      }
+      const groups = new Map();
+      for (const item of items) {
+        const name = dayGroup(item.posted_ms);
+        if (!groups.has(name)) groups.set(name, []);
+        groups.get(name).push(item);
+      }
+      const fragment = document.createDocumentFragment();
+      for (const [name, entries] of groups) {
+        if (!entries.length) continue;
+        const section = node("section", "group");
+        section.append(node("h2", "", name));
+        const list = node("ol", "list");
+        for (const item of entries) {
+          list.append(rowsByKey.get(item.key));
+        }
+        section.append(list);
+        fragment.append(section);
+      }
+      results.replaceChildren(fragment);
+    }
+
+    function updateRow(item) {
+      let row = rowsByKey.get(item.key);
+      if (!row) {
+        row = node("li");
+        rowsByKey.set(item.key, row);
+      }
+      const classes = ["notification"];
+      if (unreadKeys.has(item.key)) classes.push("unread");
+      if (item.removed_ms !== null) classes.push("removed");
+      row.className = classes.join(" ");
+      const meta = node("div", "meta");
+      meta.append(node("span", "app", item.app || item.package));
+      const time = node("time", "", new Date(item.posted_ms).toLocaleString([], {
+        hour: "2-digit", minute: "2-digit", month: "short", day: "numeric"
+      }));
+      time.dateTime = new Date(item.posted_ms).toISOString();
+      meta.append(time);
+      const content = node("div", "content");
+      content.append(node("p", "title", item.title || "(No title)"));
+      if (item.text) content.append(node("p", "text", item.text));
+      if (item.sub_text) content.append(node("p", "subtext", item.sub_text));
+      if (item.removed_ms !== null) content.append(node("span", "removed-label", "Removed"));
+      row.replaceChildren(meta, content);
+    }
+
+    function merge(items, markNew = true) {
+      const newItems = items.filter(item => !byKey.has(item.key))
+        .sort((a, b) => a.posted_ms - b.posted_ms);
+      for (const item of newItems) displayOrder.set(item.key, ++nextOrder);
+      for (const item of items) {
+        const current = byKey.get(item.key);
+        if (current && current.updated_ms >= item.updated_ms) continue;
+        if (!current && (markNew || item.posted_ms > viewedBefore)) unreadKeys.add(item.key);
+        byKey.set(item.key, item);
+        updateRow(item);
+      }
+      const retained = [...byKey.values()].sort((a, b) => b.updated_ms - a.updated_ms).slice(500);
+      for (const item of retained) {
+        byKey.delete(item.key);
+        rowsByKey.delete(item.key);
+        displayOrder.delete(item.key);
+        unreadKeys.delete(item.key);
+      }
+      refreshApps();
+      render();
+    }
+
+    function replace(items) {
+      byKey.clear();
+      rowsByKey.clear();
+      displayOrder.clear();
+      unreadKeys.clear();
+      nextOrder = 0;
+      merge(items, false);
+    }
+
+    async function request(path) {
+      const response = await fetch(path, {headers, cache: "no-store"});
+      const payload = await response.json();
+      if (!response.ok) throw Object.assign(new Error(payload.message || "Request failed."), {payload});
+      return payload;
+    }
+
+    async function loadStatus() {
+      try {
+        setStatus(await request("/api/status"));
+      } catch (error) {
+        setStatus(error.payload || {status: "unreachable", message: error.message});
+      }
+    }
+
+    async function follow() {
+      while (!stopped) {
+        try {
+          const initial = cursor === null;
+          const query = new URLSearchParams({limit: "500", wait: initial ? "0" : "55"});
+          if (cursor !== null) query.set("since", String(cursor));
+          const started = performance.now();
+          const payload = await request("/api/notifications?" + query);
+          if (initial) {
+            replace(payload.notifications || []);
+          } else {
+            merge(payload.notifications || []);
+          }
+          const updated = (payload.notifications || []).map(item => item.updated_ms);
+          cursor = Math.max(cursor || 0, ...updated);
+          setStatus({status: "connected", message: "Connected via " + (payload.path_kind || "configured path") + "."});
+          if (!initial && performance.now() - started < 100) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        } catch (error) {
+          const status = error.payload || {status: "unreachable", message: error.message};
+          if (status.status === "off") {
+            replace([]);
+            cursor = null;
+          }
+          setStatus(status);
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      }
+    }
+
+    appFilter.addEventListener("change", render);
+    search.addEventListener("input", render);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") rememberViewed();
+    });
+    window.addEventListener("beforeunload", () => {
+      stopped = true;
+      rememberViewed();
+    });
+    loadStatus();
+    follow();
+  </script>
+</body>
+</html>

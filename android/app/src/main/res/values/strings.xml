@@ -277,4 +277,20 @@
     <string name="notify_test_not_shown">Test notification was not shown. Check notification permissions and channel settings.</string>
     <string name="notify_test_no_full_screen">Test notification delivered. Full-screen alerts are not allowed.</string>
     <string name="notify_test_failed">Test notification failed. Try again later; notification rate limits also apply to tests.</string>
+
+    <!-- Phone notifications shared with the computer -->
+    <string name="notification_access_title">Tentacle notification access</string>
+    <string name="phone_notifications_enable">Share notifications with the computer</string>
+    <string name="phone_notifications_warning">The computer, and AI agents running on it, can read your notifications. Payment messages are hidden. Notifications are stored privately on this phone for up to 3 days.</string>
+    <string name="phone_notifications_hint">Stores the newest 500 notifications for up to 3 days. Turning sharing off clears them. Keep the file server running for the computer to read them. Android 15 and newer may hide verification codes in notifications.</string>
+    <string name="phone_notifications_include_ongoing">Include ongoing notifications</string>
+    <string name="phone_notifications_excluded_apps">Excluded apps</string>
+    <string name="phone_notifications_no_apps">Apps will appear here after their notifications are seen while sharing is on. Selected apps are excluded from future capture.</string>
+    <string name="phone_notifications_clear">Clear stored notifications</string>
+    <string name="phone_notifications_count">Stored notifications: %1$d</string>
+    <string name="phone_notifications_access_help">Allow Tentacle notification access to share phone notifications with the computer.</string>
+    <string name="phone_notifications_xiaomi_help">On Xiaomi, Redmi and POCO, open App info → ⋮ → Allow restricted settings if notification access is blocked, then return to notification access settings.</string>
+    <string name="phone_notifications_off">Phone notification sharing is off</string>
+    <string name="phone_notifications_needs_access">Needs notification access</string>
+    <string name="phone_notifications_listening">Listening for phone notifications</string>
 </resources>

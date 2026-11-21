@@ -2,7 +2,8 @@
 
 A manual toolkit that lets a local agent or human **browse Android phone files,
 pull call recordings, transcribe them locally on demand, receive verification
-codes, and notify the phone owner from the paired computer**.
+codes and phone notifications, and notify the phone owner from the paired
+computer**.
 
 ```text
 Android phone ← token-protected HTTP → tentacle CLI → local tools and agents
@@ -17,6 +18,8 @@ Android phone ← token-protected HTTP → tentacle CLI → local tools and agen
   backends are available.
 - `code` waits for a short-lived verification code received directly by SMS,
   with app notifications as an optional extra source.
+- `notifications` reads the owner-enabled phone notification feed; `gui` opens
+  the same feed in a private loopback web view.
 - `notify` sends a normal phone notification, or an urgent alert when the owner
   has explicitly allowed and requested one.
 - The Python ≥ 3.11 core uses only the standard library. The Android app uses
@@ -101,6 +104,8 @@ tentacle calls [--since 7d] [--until DATE] [--source NAME] [--with TEXT] [--app 
 tentacle pull PHONE_PATH... [--to DIR]
 tentacle transcribe PHONE_PATH_OR_LOCAL_FILE [--json] [--force] [-o PREFIX]
 tentacle code [--wait 120] [--from TEXT] [--since now|30s|2m] [--json]
+tentacle notifications [--since 10m|ISO] [--app NAME-or-package] [--grep TEXT] [--follow] [--json] [--limit N]
+tentacle gui [--port N] [--no-open]
 tentacle notify TEXT [--title T] [--urgent] [--wait-ack [SECONDS]] [--json]
 tentacle doctor
 ```
@@ -108,7 +113,8 @@ tentacle doctor
 File listings and `calls` support `--json`. Human times use the phone's timezone;
 `ls`, `stat`, `find`, `recent` and `calls` accept `--local-time` for the PC zone.
 Exit codes: `0` success (including empty lists), `1` operation failure,
-`2` usage/configuration error or disabled code relay, `130` interrupted.
+`2` usage/configuration error or a disabled optional phone feed, `130`
+interrupted.
 
 ## Verification codes
 
@@ -148,6 +154,36 @@ relayed; the owner must type those codes personally. Anyone who has the phone
 token and can reach its server can read retained codes, so protect the token and
 transport and leave relay off when it is not needed. The full contract is in
 [Verification-code relay](docs/CODES.md).
+
+## Notifications from the phone
+
+Phone notification sharing is off by default. In the app, enable **Share
+notifications with the computer** and grant Android notification access. A
+sideloaded app may require **App info → ⋮ → Allow restricted settings** before
+the grant is available, especially on Xiaomi/HyperOS devices. Turning sharing
+off clears the retained feed.
+
+```bash
+tentacle notifications --since 2h --app Messages
+tentacle notifications --grep delivery --follow
+tentacle notifications --since 10m --json
+tentacle gui
+```
+
+The CLI supports duration or ISO start times, app-label or package filters,
+case-insensitive search, JSON Lines and live following. The GUI is a local live
+view with app/search filters, time groups and unread highlighting. It binds only
+to `127.0.0.1`, uses a new secret URL on each launch and sends all phone
+requests through the same computer-side module as the CLI; browser code never
+receives the phone token.
+
+The phone retains at most 500 entries for three days. Payment-message text is
+replaced with `[hidden: payment message]`. Android 15 and newer may hide OTP
+content from third-party notification listeners, and Tentacle does not bypass
+that protection. Anyone with the phone token and network access can read the
+retained feed; anyone who obtains the active local GUI URL can view it from that
+computer. See [Phone notification sharing](docs/NOTIFICATIONS.md) for the API,
+retention and privacy contract.
 
 ## Notifications from the computer
 
@@ -330,9 +366,11 @@ the PC races them and picks the fastest working one automatically
 ## Privacy and limitations
 
 The phone server is token-protected. Its file endpoints are read-only; enabled
-code relay exposes in-memory codes for up to ten minutes. Use a trusted network
-or an encrypted transport for HTTP. Audio and transcripts stay local; ask
-before uploading phone content elsewhere. Ensure recording consent where required.
+code relay exposes in-memory codes for up to ten minutes, and enabled phone
+notification sharing exposes retained notification content. Use a trusted
+network or an encrypted transport for HTTP. Audio and transcripts stay local;
+ask before uploading phone content elsewhere. Ensure recording consent where
+required.
 Android restricts access to `Android/data` and `Android/obb`. Vendor battery
 management can pause the server; allow background operation and autostart when
 available.
@@ -352,6 +390,7 @@ Tentacle 是给本机 agent 或人使用的手动工具箱：浏览安卓手机�
 - `calls` 列出配置目录中的录音，按联系人、应用和日期筛选；`pull` 下载选中的文件。
 - `transcribe` 接受手机路径或本地文件，以音频 SHA-256 缓存转写，输出文本或 JSON。支持 FunASR、faster-whisper 和外部本地命令。
 - `code` 等待手机直接收到的短信验证码，也可选读取应用通知作为补充来源。
+- `notifications` 读取用户主动开启的手机通知共享；`gui` 在电脑本机打开同一通知源。
 - PC 核心只用 Python ≥ 3.11 标准库；安卓端使用 Kotlin，没有第三方运行时依赖。
 
 自动化实现保留在 `experimental/automation` 分支。
@@ -398,6 +437,12 @@ tentacle transcribe ./call.m4a --force -o ./transcript
 验证码转发默认关闭。在应用的 **Settings** 中开启 **Relay verification codes to the computer**，确认警告并授予短信权限；只有短信权限已授予时，状态才会显示 **Waiting for codes**。如果权限被拒绝或受限，请打开应用信息授予权限。安卓 13 及以上的侧载应用可能要先在 **应用信息 → ⋮ → 允许受限设置** 中放行；小米、Redmi 和 POCO 还可能需要在 **应用信息 → 权限 → 通知类短信 → 允许** 中单独授权。
 
 **Also read codes from app notifications** 是可选的补充来源。安卓 15 及以上会向普通通知监听器隐藏其他应用通知中的一次性验证码，因此它主要适用于安卓 14 及以下，或通过应用内消息发送的验证码。开启通知读取时，侧载应用也可能需要先允许受限设置。电脑端使用 `tentacle code --from '<品牌>' --wait 120` 等待验证码；如验证码可能已提前到达，可加 `--since 30s` 或 `--since 2m`。验证码只在手机内存保留十分钟，支付、购买、转账和提现消息永不转发。
+
+### 手机通知
+
+手机通知共享默认关闭。在应用中开启 **Share notifications with the computer** 并授予系统通知使用权；侧载应用可能要先在 **应用信息 → ⋮ → 允许受限设置** 中放行，小米/HyperOS 设备尤其如此。电脑端可用 `tentacle notifications --since 2h --app Messages` 筛选查看，或运行 `tentacle gui` 打开仅监听 `127.0.0.1`、每次启动使用随机密钥的本地实时页面。CLI 与 GUI 共用电脑端数据模块，网页不会获得手机 token。
+
+手机最多保留最近三天的 500 条通知；关闭共享会清空记录。支付消息正文会替换为 `[hidden: payment message]`。安卓 15 及以上可能向第三方通知监听器隐藏验证码，Tentacle 不会绕过此保护。持有手机 token 且能访问手机服务的人可以读取保留的通知；拿到当前 GUI 本地链接的同机用户也可以在该次运行期间查看。完整说明见 [手机通知共享](docs/NOTIFICATIONS.md)。
 
 文件操作：`ls [PATH] [-a]` 列目录，`stat PATH` 看元数据，`find [ROOT] --ext jpg,pdf --name TEXT --since 7d --limit 50` 搜索，`recent --since 1d` 看最近文件，`get PATH [DEST]` 下载，`cat PATH --max-bytes N` 读取文本。列表和录音支持 `--json`；`ls / stat / find / recent / calls` 默认显示手机时区，`--local-time` 切换为电脑时区。退出码：`0` 成功（含空列表）、`1` 操作失败、`2` 用法或配置错误、`130` 中断。
 

@@ -88,6 +88,7 @@ class ServerService : Service() {
                     api = api,
                     requestStore = RequestStores.get(this),
                     codeStore = dev.tentacle.codes.CodeStores.get(this),
+                    phoneNotificationStoreProvider = { dev.tentacle.feed.PhoneNotificationStores.get(this) },
                     notifyStore = dev.tentacle.notify.PhoneNotifications.get(this),
                     info = {
                         PingInfo(
@@ -101,6 +102,7 @@ class ServerService : Service() {
                             lan = DeviceEnvironment.addresses(this).filter { it.priority == 0 }
                                 .map { "http://${it.host}:${settings.port}" },
                             requests = mapOf("followup" to true, "retry" to true),
+                            phoneNotifications = mapOf("enabled" to settings.phoneNotificationsEnabled),
                         )
                     },
                 )
