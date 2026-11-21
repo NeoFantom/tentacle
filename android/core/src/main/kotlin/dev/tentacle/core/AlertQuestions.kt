@@ -16,12 +16,24 @@ data class AlertQuestion(
     }
 }
 
-fun normalizeAlertAnswer(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKC)
-    .trim()
-    .replace(Regex("(?U)\\s+"), " ")
+// No regex here: Android's ICU engine rejects the JVM-only (?U) flag, so whitespace is collapsed by hand.
+fun normalizeAlertAnswer(value: String): String = collapseWhitespace(Normalizer.normalize(value, Normalizer.Form.NFKC))
     .lowercase(Locale.ROOT)
     .trimEnd('.', '。', '!', '！')
     .trimEnd()
+
+private fun collapseWhitespace(value: String): String = buildString {
+    var pendingSpace = false
+    for (character in value) {
+        if (character.isWhitespace() || Character.isSpaceChar(character)) {
+            pendingSpace = isNotEmpty()
+        } else {
+            if (pendingSpace) append(' ')
+            pendingSpace = false
+            append(character)
+        }
+    }
+}
 
 data class QuestionPick(val question: AlertQuestion, val changed: Boolean)
 

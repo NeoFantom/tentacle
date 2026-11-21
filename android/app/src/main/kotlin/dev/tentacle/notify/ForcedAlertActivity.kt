@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.window.OnBackInvokedDispatcher
 import android.view.inputmethod.EditorInfo
@@ -68,8 +69,9 @@ class ForcedAlertActivity : Activity() {
         val padding = (24 * resources.displayMetrics.density).toInt()
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(padding, padding, padding, padding)
+            // Top-aligned so the answer field and Submit stay above the on-screen keyboard.
+            gravity = Gravity.TOP
+            setPadding(padding, padding * 2, padding, padding)
             setBackgroundColor(getColor(R.color.warn_container))
         }
         fun label(value: CharSequence, size: Float, bottom: Int = padding): TextView = TextView(this).apply {
@@ -105,11 +107,22 @@ class ForcedAlertActivity : Activity() {
             minHeight = padding * 3
             setOnClickListener { submit() }
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        setContentView(ScrollView(this).apply {
+        val scroller = ScrollView(this).apply {
             isFillViewport = true
             setBackgroundColor(getColor(R.color.warn_container))
             addView(body)
-        })
+        }
+        // Edge-to-edge windows (target SDK 35) are not resized for the keyboard; pad by its height instead.
+        scroller.setOnApplyWindowInsetsListener { view, insets ->
+            val bottom = if (Build.VERSION.SDK_INT >= 30) {
+                insets.getInsets(WindowInsets.Type.ime() or WindowInsets.Type.systemBars()).bottom
+            } else {
+                @Suppress("DEPRECATION") insets.systemWindowInsetBottom
+            }
+            view.setPadding(0, 0, 0, bottom)
+            insets
+        }
+        setContentView(scroller)
         input.requestFocus()
     }
 

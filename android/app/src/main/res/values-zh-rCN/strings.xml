@@ -203,7 +203,7 @@
     <string name="whats_new_empty">此版本暂无更新说明。</string>
     <string name="update_notification_installed_title">已更新到 %1$s</string>
     <string name="update_notification_installed_text">点按查看更新内容</string>
-    <string name="update_reopen">更新后自动打开 Tentacle</string>
+    <string name="update_reopen">去设置</string>
     <string name="update_reopen_help">若想在更新后自动打开 Tentacle，请在设置中允许“显示在其他应用上层”。你也可以随时点按更新通知返回。</string>
     <string name="update_reopen_xiaomi_help">若想在更新后自动打开 Tentacle，请在设置中允许“显示在其他应用上层”和“后台弹出界面”。你也可以随时点按更新通知返回。</string>
     <string name="update_reopen_dismiss">不再提示</string>

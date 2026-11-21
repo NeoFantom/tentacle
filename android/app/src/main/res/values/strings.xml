@@ -203,7 +203,7 @@
     <string name="whats_new_empty">No notes for this version.</string>
     <string name="update_notification_installed_title">Updated to %1$s</string>
     <string name="update_notification_installed_text">Tap to see what\'s new</string>
-    <string name="update_reopen">Reopen Tentacle by itself after updates</string>
+    <string name="update_reopen">Open settings</string>
     <string name="update_reopen_help">To reopen Tentacle by itself after updates, allow “Display over other apps” in settings. You can always tap the update notification to return.</string>
     <string name="update_reopen_xiaomi_help">To reopen Tentacle by itself after updates, allow “Display over other apps” and “Display pop-up windows while running in the background” in settings. You can always tap the update notification to return.</string>
     <string name="update_reopen_dismiss">Don\'t show again</string>
