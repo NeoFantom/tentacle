@@ -391,6 +391,7 @@ object AppUpdater {
             val callback = Intent(context, UpdateInstallReceiver::class.java).putExtra(EXTRA_VERSION, release.version)
             val pending = PendingIntent.getBroadcast(context, sessionId, callback,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
+            Settings(context).markUpdateStarted(release.version, System.currentTimeMillis())
             session.commit(pending.intentSender)
         } catch (error: Exception) {
             session.abandon()

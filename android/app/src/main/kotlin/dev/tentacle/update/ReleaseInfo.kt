@@ -1,45 +1,21 @@
 package dev.tentacle.update
 
+import dev.tentacle.core.Versions
+
 data class ReleaseAsset(val name: String, val url: String, val size: Long)
 
 data class ReleaseInfo(val version: String, val apk: ReleaseAsset, val checksum: ReleaseAsset?)
 
 object Releases {
-    fun compareVersions(left: String, right: String): Int {
-        val a = parseVersion(left) ?: return 0
-        val b = parseVersion(right) ?: return 0
-        for (index in 0..2) {
-            val compared = a.core[index].compareTo(b.core[index])
-            if (compared != 0) return compared
-        }
-        if (a.preRelease.isEmpty() || b.preRelease.isEmpty()) {
-            return when {
-                a.preRelease.isEmpty() && b.preRelease.isEmpty() -> 0
-                a.preRelease.isEmpty() -> 1
-                else -> -1
-            }
-        }
-        for (index in 0 until minOf(a.preRelease.size, b.preRelease.size)) {
-            val leftPart = a.preRelease[index]
-            val rightPart = b.preRelease[index]
-            val leftNumber = leftPart.toBigIntegerOrNull()
-            val rightNumber = rightPart.toBigIntegerOrNull()
-            val compared = when {
-                leftNumber != null && rightNumber != null -> leftNumber.compareTo(rightNumber)
-                leftNumber != null -> -1
-                rightNumber != null -> 1
-                else -> leftPart.compareTo(rightPart)
-            }
-            if (compared != 0) return compared
-        }
-        return a.preRelease.size.compareTo(b.preRelease.size)
-    }
+    fun compareVersions(left: String, right: String): Int = Versions.compare(left, right) ?: 0
 
     fun parse(json: String): ReleaseInfo {
         val root = JsonParser(json).parse() as? Map<*, *> ?: error("Release JSON must be an object")
         val tag = root["tag_name"] as? String ?: error("Release JSON has no tag_name")
-        require(tag.matches(Regex("v[0-9]+\\.[0-9]+\\.[0-9]+"))) { "Release tag must be vX.Y.Z" }
-        val version = parseVersion(tag)?.core?.joinToString(".") ?: error("Release tag must be vX.Y.Z")
+        require(tag.matches(Regex("v[0-9]+\\.[0-9]+\\.[0-9]+")) && Versions.compare(tag, tag) != null) {
+            "Release tag must be vX.Y.Z"
+        }
+        val version = tag.removePrefix("v")
         val assets = (root["assets"] as? List<*>)?.map { raw ->
             val item = raw as? Map<*, *> ?: error("Release asset must be an object")
             ReleaseAsset(
@@ -55,16 +31,6 @@ object Releases {
     fun selectApk(version: String, assets: List<ReleaseAsset>): ReleaseAsset? {
         val apks = assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
         return apks.firstOrNull { it.name == "tentacle-$version.apk" } ?: apks.firstOrNull()
-    }
-
-    private data class Version(val core: List<java.math.BigInteger>, val preRelease: List<String>)
-
-    private fun parseVersion(value: String): Version? {
-        val match = Regex("^v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$")
-            .matchEntire(value) ?: return null
-        val preRelease = match.groupValues[4].takeIf { it.isNotEmpty() }?.split('.').orEmpty()
-        if (preRelease.any { it.all(Char::isDigit) && it.length > 1 && it.startsWith('0') }) return null
-        return Version((1..3).map { match.groupValues[it].toBigInteger() }, preRelease)
     }
 
 }

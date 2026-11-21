@@ -243,7 +243,26 @@ The app can maintain an ECDSA-authenticated SSH reverse tunnel while the local
 server runs. Its private key remains in app-private storage; its host-key trust,
 connection settings, public URL and status follow [CONNECT.md](CONNECT.md).
 The app also checks a configured GitHub-compatible latest-release endpoint and
-installs only APKs signed by the running application's certificate.
+installs only APKs signed by the running application's certificate. Before an
+in-app install is committed, the app records its start time and target version.
+The application and the `MY_PACKAGE_REPLACED` receiver idempotently append the
+running version to an app-private ordered history, retaining the newest 20.
+Reviewed English and Chinese release notes ship in the APK; after an upgrade,
+the app shows the notes newer than the previous recorded version, including all
+skipped versions, once automatically and on demand from the main-screen footer.
+An upgrade from a version without history shows only the current version's
+notes; a fresh install records the version without opening the dialog.
+
+After `MY_PACKAGE_REPLACED`, an update started by Tentacle within the previous
+30 minutes can reopen the main activity only when the owner has opted into the
+system "Display over other apps" permission; Android 10 and newer otherwise
+block this background activity launch. The receiver always posts an update
+notification whose tap opens the same release notes, subject to the app's
+notification permission. The release-notes dialog
+offers the optional system permission until the owner opens its settings or
+chooses not to see the offer again, including Xiaomi's separate background
+pop-up setting when applicable. This update bookkeeping and user interface do
+not change the phone HTTP API.
 
 ## 5. PC package and CLI
 

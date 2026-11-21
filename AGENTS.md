@@ -34,6 +34,13 @@ the single source of truth for module boundaries and contracts.
   `cd android && ./gradlew test`.
 - English for code, comments, CLI messages, and docs. Android user-visible text
   is localized in English and Simplified Chinese string resources.
+- **Release notes:** every user-visible change adds a plain-language English
+  and Chinese bullet to the `unreleased` entry in
+  `android/app/src/main/assets/release-notes.json` (create it if missing).
+  When bumping `versionName`, rename `unreleased` to the new version;
+  `scripts/release.sh` refuses a version without notes. Each bullet is one
+  sentence about what the owner notices, without internal jargon, and versions
+  should have no more than three bullets where possible.
 - Never commit secrets, recordings, transcripts, or build outputs.
 - Don't `git commit`; the maintainer reviews and commits. The exception is a
   coding agent invoked by a request run, whose fixed prompt requires a commit

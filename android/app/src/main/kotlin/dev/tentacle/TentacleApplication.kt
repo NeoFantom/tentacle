@@ -5,6 +5,7 @@ import android.app.Application
 class TentacleApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        Settings(this).recordInstalledVersion()
         AppLog.initialize(this)
         dev.tentacle.notify.PhoneNotifications.recoverSavedVolume(this)
         RequestStores.get(this)

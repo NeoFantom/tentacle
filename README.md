@@ -40,6 +40,14 @@ Install the debug APK from `app/build/outputs/apk/debug/`, open **Tentacle**,
 grant All files access and notification permission, allow background operation,
 and tap **Start**. Copy the pairing link shown for a reachable address.
 
+Tentacle can check a configured GitHub release source and install a signed APK
+from inside the app. After an upgrade it shows the changes since the version
+that was previously installed, including skipped versions; **What's new** in
+the footer opens the same list at any time. The update receiver always posts a
+notification that returns to this list when notifications are allowed.
+Automatically reopening after an update is optional and requires **Display
+over other apps** permission.
+
 Install the PC CLI from the repository root:
 
 ```bash

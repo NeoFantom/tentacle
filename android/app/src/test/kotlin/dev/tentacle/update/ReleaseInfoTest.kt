@@ -25,7 +25,10 @@ class ReleaseInfoTest {
 
     @Test fun `malformed releases and missing APK are rejected`() {
         for (json in listOf("[]", "{}", "{", "{\"tag_name\":\"v1.0.0\",\"assets\":[]}",
-            "{\"tag_name\":\"1.0.0\",\"assets\":[]}")) {
+            "{\"tag_name\":\"1.0.0\",\"assets\":[]}",
+            "{\"tag_name\":\"v01.2.3\",\"assets\":[]}",
+            "{\"tag_name\":\"v1.02.3\",\"assets\":[]}",
+            "{\"tag_name\":\"v1.2.03\",\"assets\":[]}")) {
             assertThrows(RuntimeException::class.java) { Releases.parse(json) }
         }
     }

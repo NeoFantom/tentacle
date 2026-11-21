@@ -2,6 +2,8 @@ package dev.tentacle
 
 import android.content.Context
 import dev.tentacle.core.Tokens
+import dev.tentacle.core.InstalledVersionHistory
+import dev.tentacle.core.Json
 
 class Settings(context: Context) {
     private val contextForCodes = context.applicationContext
@@ -176,6 +178,43 @@ class Settings(context: Context) {
         get() = prefs.getLong("last_automatic_update_check_millis", 0L)
         set(value) { prefs.edit().putLong("last_automatic_update_check_millis", value).apply() }
 
+    var installedVersionHistory: List<String>
+        get() = try {
+            (Json.parse(prefs.getString("installed_version_history", "[]")!!) as? List<*>)
+                ?.filterIsInstance<String>().orEmpty()
+        } catch (_: Exception) { emptyList() }
+        set(value) {
+            prefs.edit().putString("installed_version_history",
+                Json.stringify(InstalledVersionHistory.from(value).versions)).apply()
+        }
+
+    @android.annotation.SuppressLint("ApplySharedPref") // Both process startup and the replacement receiver record it.
+    fun recordInstalledVersion(version: String = BuildConfig.VERSION_NAME) = synchronized(updateLock) {
+        val history = installedVersionHistory
+        val next = InstalledVersionHistory.from(history).append(version).versions
+        if (next != history) check(prefs.edit().putString("installed_version_history", Json.stringify(next)).commit())
+    }
+
+    var notesShownVersion: String
+        get() = prefs.getString("notes_shown_version", "")!!
+        set(value) { prefs.edit().putString("notes_shown_version", value).apply() }
+
+    var updateReopenHintDismissed: Boolean
+        get() = prefs.getBoolean("update_reopen_hint_dismissed", false)
+        set(value) { prefs.edit().putBoolean("update_reopen_hint_dismissed", value).apply() }
+
+    val updateStartedMillis: Long
+        get() = prefs.getLong("update_started_ms", 0L)
+
+    val updateTargetVersion: String?
+        get() = prefs.getString("update_target_version", null)
+
+    @android.annotation.SuppressLint("ApplySharedPref") // Persist before PackageInstaller can replace this process.
+    fun markUpdateStarted(version: String, nowMillis: Long) {
+        check(prefs.edit().putLong("update_started_ms", nowMillis)
+            .putString("update_target_version", version).commit())
+    }
+
     /** Xiaomi autostart cannot be detected; the "needs attention" item hides once its page was opened. */
     var autostartOpened: Boolean
         get() = prefs.getBoolean("autostart_opened", false)
@@ -197,5 +236,6 @@ class Settings(context: Context) {
         val RING_STYLES = listOf("both", "vibrate", "sound")
         val FORCED_CAPS = listOf(5, 10, 15, 20, 30)
         private val tokenLock = Any()
+        private val updateLock = Any()
     }
 }

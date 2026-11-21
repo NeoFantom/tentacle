@@ -37,6 +37,8 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import dev.tentacle.core.IpAddresses
+import dev.tentacle.core.InstalledVersionHistory
+import dev.tentacle.core.ReleaseNotes
 import dev.tentacle.core.AppRequest
 import dev.tentacle.core.RequestStore
 import dev.tentacle.core.RequestText
@@ -48,6 +50,8 @@ import dev.tentacle.tunnel.TunnelKeys
 import dev.tentacle.tunnel.TunnelLogic
 import dev.tentacle.tunnel.TunnelStatus
 import dev.tentacle.update.AppUpdater
+import dev.tentacle.update.AfterUpdate
+import dev.tentacle.update.AfterUpdatePolicy
 import dev.tentacle.update.ReleaseAsset
 import dev.tentacle.update.ReleaseInfo
 import dev.tentacle.update.Releases
@@ -170,6 +174,9 @@ class MainActivity : Activity() {
     private var installRequested = false
     private var activityVisible = false
     private var updatePromptDialog: AlertDialog? = null
+    private var whatsNewDialog: AlertDialog? = null
+    private var afterUpdate = false
+    private var debugShowWhatsNew = false
     private var debugUpdateSourceChanged = false
     private var tokenVisible = false
     private var updating = false
@@ -191,6 +198,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = Settings(this)
+        AfterUpdate.cancelNotification(this)
         requestStore = RequestStores.get(this)
         screenSections = ScreenSections(savedInstanceState?.getStringArrayList(SECTIONS_STATE))
         if (savedInstanceState == null && settings.tunnelEnabled && settings.tunnelHost.isBlank()) {
@@ -350,6 +358,14 @@ class MainActivity : Activity() {
     /** Debug only: exercise update checks or inject availability without a release server. */
     private fun handleDebugUpdate(intent: Intent) {
         if (!BuildConfig.DEBUG) return
+        intent.getStringExtra("version_history")?.let {
+            settings.installedVersionHistory = it.split(',').map(String::trim).filter(String::isNotEmpty)
+            intent.removeExtra("version_history")
+        }
+        if (intent.getBooleanExtra("show_whats_new", false)) {
+            debugShowWhatsNew = true
+            intent.removeExtra("show_whats_new")
+        }
         if (debugUpdateSourceChanged) {
             debugUpdateSourceChanged = false
             AppUpdater.check(this, force = true)
@@ -360,6 +376,12 @@ class MainActivity : Activity() {
     }
 
     private fun handleUpdateIntent(intent: Intent) {
+        AfterUpdate.cancelNotification(this)
+        if (intent.getBooleanExtra(AfterUpdate.EXTRA_AFTER_UPDATE, false)) {
+            afterUpdate = true
+            intent.removeExtra(AfterUpdate.EXTRA_AFTER_UPDATE)
+        }
+        if (activityVisible) maybeShowWhatsNew()
         if (!intent.getBooleanExtra(AppUpdater.EXTRA_INSTALL_UPDATE, false)) return
         intent.removeExtra(AppUpdater.EXTRA_INSTALL_UPDATE)
         installRequested = true
@@ -372,6 +394,8 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         activityVisible = true
+        AfterUpdate.cancelNotification(this)
+        maybeShowWhatsNew()
         ServerService.refreshNotificationChannel(this)
         AppUpdater.refreshNotificationChannel(this)
         dev.tentacle.notify.PhoneNotifications.createChannels(this)
@@ -1307,7 +1331,9 @@ class MainActivity : Activity() {
             content.addView(this, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         updateStatusText = text(footer, "", 13f, secondary = true)
-        checkUpdates = button(footer, getString(R.string.check_updates), ButtonKind.OUTLINE, fill = true) {
+        val actions = buttonRow(footer)
+        button(actions, getString(R.string.whats_new), ButtonKind.OUTLINE, fill = true) { showWhatsNew() }
+        checkUpdates = button(actions, getString(R.string.check_updates), ButtonKind.OUTLINE, fill = true) {
             when (AppUpdater.state) {
                 is UpdateState.Available -> AppUpdater.downloadAndInstall(this)
                 is UpdateState.PermissionRequired -> {
@@ -1534,7 +1560,8 @@ class MainActivity : Activity() {
             updatePromptDialog = null
             return
         }
-        if (!activityVisible || isFinishing || isDestroyed || installRequested || settings.updateSource.isBlank()) return
+        if (!activityVisible || isFinishing || isDestroyed || installRequested || settings.updateSource.isBlank() ||
+            whatsNewDialog != null) return
         val version = state.release.version
         if (!UpdatePrompt.shouldShow(version, settings.dismissedUpdateVersion, state.manual,
                 updatePromptDialog != null || shownUpdatePromptVersions.any { Releases.compareVersions(it, version) == 0 },
@@ -1550,6 +1577,72 @@ class MainActivity : Activity() {
                 dialog.setOnDismissListener { if (updatePromptDialog === dialog) updatePromptDialog = null }
                 dialog.show()
             }
+    }
+
+    private fun previousInstalledVersion(): String? =
+        InstalledVersionHistory.from(settings.installedVersionHistory).previous(BuildConfig.VERSION_NAME)
+
+    @Suppress("DEPRECATION")
+    private fun wasUpdated(): Boolean {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        return AfterUpdatePolicy.isUpdate(previousInstalledVersion(), info.firstInstallTime, info.lastUpdateTime, afterUpdate)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun maybeShowWhatsNew() {
+        if (!activityVisible || isFinishing || isDestroyed || whatsNewDialog != null) return
+        if (debugShowWhatsNew) {
+            debugShowWhatsNew = false
+            showWhatsNew()
+        } else if (settings.notesShownVersion != BuildConfig.VERSION_NAME) {
+            val info = packageManager.getPackageInfo(packageName, 0)
+            if (AfterUpdatePolicy.shouldShowNotes(BuildConfig.VERSION_NAME, settings.notesShownVersion,
+                    previousInstalledVersion(), info.firstInstallTime, info.lastUpdateTime, afterUpdate)) showWhatsNew()
+            else settings.notesShownVersion = BuildConfig.VERSION_NAME
+        }
+    }
+
+    private fun showWhatsNew() {
+        if (isFinishing || isDestroyed || whatsNewDialog != null) return
+        updatePromptDialog?.dismiss()
+        val previous = previousInstalledVersion()
+        val notes = assets.open("release-notes.json").bufferedReader().use {
+            ReleaseNotes.parse(it.readText()).between(previous, BuildConfig.VERSION_NAME)
+        }
+        val title = if (notes.size > 1 && previous != null) getString(R.string.whats_new_since, previous)
+            else getString(R.string.whats_new_version, BuildConfig.VERSION_NAME)
+        val chinese = resources.configuration.locales[0].language == "zh"
+        val body = if (notes.isEmpty()) getString(R.string.whats_new_empty) else notes.joinToString("\n\n") { note ->
+            note.version + "\n" + (if (chinese) note.zh else note.en).joinToString("\n") { "• $it" }
+        }
+        val offerReopen = wasUpdated() && !SystemSettings.canDrawOverlays(this) && !settings.updateReopenHintDismissed
+        val message = column().apply { setPadding(dp(24), dp(8), dp(24), dp(8)) }
+        text(message, body)
+        if (offerReopen) text(message, getString(if (isXiaomi()) R.string.update_reopen_xiaomi_help
+            else R.string.update_reopen_help), 13f, secondary = true)
+        val builder = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(ScrollView(this).apply { addView(message) })
+            .setPositiveButton(android.R.string.ok, null)
+        if (offerReopen) {
+            builder.setNeutralButton(R.string.update_reopen) { _, _ ->
+                settings.updateReopenHintDismissed = true
+                openUpdateReopenSettings()
+            }.setNegativeButton(R.string.update_reopen_dismiss) { _, _ -> settings.updateReopenHintDismissed = true }
+        }
+        whatsNewDialog = builder.create().also { dialog ->
+            dialog.setOnDismissListener { if (whatsNewDialog === dialog) whatsNewDialog = null }
+            dialog.show()
+            settings.notesShownVersion = BuildConfig.VERSION_NAME
+        }
+    }
+
+    private fun openUpdateReopenSettings() {
+        val overlay = Intent(SystemSettings.ACTION_MANAGE_OVERLAY_PERMISSION, packageUri())
+        if (isXiaomi()) launch(Intent("miui.intent.action.APP_PERM_EDITOR")
+            .setComponent(ComponentName("com.miui.securitycenter", "com.miui.permcenter.permissions.PermissionsEditorActivity"))
+            .putExtra("extra_pkgname", packageName), overlay, appDetails())
+        else launch(overlay, appDetails())
     }
 
     private fun publicPairingUrl(): String? = settings.publicUrl.takeIf {
