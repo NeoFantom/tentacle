@@ -179,10 +179,11 @@ terminal acknowledgement or dismissal when received.
 ## Requests from the app
 
 The phone owner can ask for a Tentacle change or attach an app log to a bug
-report. A configured computer watcher claims one request, runs a coding agent in
-the Tentacle repository, checks the commit and protected paths, runs the
-configured tests, then pushes and releases it. Push and release are performed by
-the watcher after those checks; the coding agent must never do either one.
+report. A configured computer watcher claims one request and runs an implementer
+agent. The agent classifies generally useful work as `upstream` and owner-only
+work as `personal`. Upstream work is tested and opened as a pull request without
+a version bump; personal work runs only in a separately configured fork
+checkout. The agent must never push, open a PR or release.
 
 Configure a generic agent command and repository, then optionally install the
 systemd user service:
@@ -190,16 +191,31 @@ systemd user service:
 ```bash
 tentacle requests setup \
   --command "my-agent --prompt-file {prompt_file}" \
-  --repo ~/src/tentacle \
-  --release "scripts/release.sh" \
+  --repo /path/to/tentacle \
+  --base main \
+  --push-remote origin \
+  --pr-repo owner/tentacle \
   --install-service
+```
+
+Maintainers opt into the separate read-only reviewer and release path:
+
+```bash
+tentacle requests setup \
+  --review-command "review-agent --read-only" \
+  --test "scripts/test.sh" \
+  --release "scripts/release.sh" \
+  --pr-repo owner/tentacle
 ```
 
 There is no default agent command, and `requests watch` refuses to start until
 one is configured. Without systemd, run `tentacle requests watch` in a durable
 terminal or use the manual command printed by `setup`. `tentacle requests list`
 shows recent requests; `tentacle requests watch --once` handles at most one
-request and `tentacle requests run-once` is its alias.
+request and `tentacle requests run-once` is its alias. `tentacle requests retry
+ID` retries a failed request when the app supports it. `tentacle requests review
+[--once]` explicitly runs maintainer review; automatic review from `watch` is
+off unless `review_command` is configured.
 
 If your agent is a shell function or alias from an interactive startup file
 (for example a `cx` function in `~/.bashrc`), don't run it through `bash -ic`:
@@ -215,7 +231,7 @@ cx exec -
 ```
 
 ```bash
-tentacle requests setup --command ~/bin/tentacle-agent.sh --repo ~/src/tentacle
+tentacle requests setup --command /path/to/tentacle-agent.sh --repo /path/to/tentacle
 ```
 
 The prompt arrives on standard input. The command may instead use
@@ -228,6 +244,15 @@ and places fixed non-overridable repository rules before and after it. This
 scope lock is defense in depth: it reduces prompt-injection risk but cannot
 eliminate it.
 
+The result file starts with `Target: upstream` or `Target: personal`, then the
+short owner-facing summary. An upstream branch is created from the configured
+base (or discovered remote default branch), tested, pushed to `push_remote` and
+opened on `pr_repo`. If `tentacle-request/ID` already exists during retry, the
+new branch gets a random suffix and preserves the earlier history. Empty
+`pr_repo` resolves from the push remote, including its parent when the remote is
+a fork. A personal request needs `--fork-repo` and optionally `--fork-release`;
+its rerun bumps patch versions for changed code before the direct flow.
+
 The watcher stores each run under `<data_dir>/requests/<id>/`. A stale request
 that this computer left in `working` is failed at startup with a clear restart
 message; another computer's claim is left alone. If an agent makes no commit,
@@ -235,6 +260,20 @@ it must begin `result.txt` with `Done:` for a successful no-code-needed result,
 or `Failed:` for a refusal, unclear request, or a bug whose cause could not be
 found. The watcher removes this metadata prefix before showing the result on the
 phone. A no-commit result without either prefix fails conservatively.
+
+Open PRs are tracked in `<data_dir>/requests-prs.json`. While idle, the watcher
+checks at most every five minutes and updates the phone after merge or closure.
+An old app may reject a follow-up with 409; the watcher retries it for up to
+seven days and then logs that it was dropped. The phone advertises follow-up and
+retry support in `GET /v1/ping`.
+
+Maintainer review uses a separate fixed prompt and command in a fresh worktree.
+The reviewer reads the PR and writes only `Decision: merge` or `Decision: close`
+plus a short note; it cannot edit, run code, push or merge. After approval the
+watcher checks protected paths, tests, merges, bumps patch versions on the
+default branch, pushes and releases. Pre-merge failures leave the PR open;
+post-merge failures report the unfinished step without claiming a release.
+Review worktrees are always removed.
 
 If a request creates commits but later fails a safety check, the watcher records
 that rejected `HEAD` in `<data_dir>/requests-blocked.json`. Later requests for

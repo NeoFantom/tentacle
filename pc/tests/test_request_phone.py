@@ -53,6 +53,68 @@ class RequestPhoneTests(unittest.TestCase):
             ],
         )
 
+    def test_ping_advertises_optional_request_features(self) -> None:
+        self.assertEqual(
+            self.client.ping()["requests"],
+            {"followup": True, "retry": True},
+        )
+
+    def test_final_outcome_updates_message_and_time(self) -> None:
+        request = self.server.add_request("Add a setting")
+        request_id = str(request["id"])
+        self.client.update_request(request_id, "working", "Working")
+        done = self.client.update_request(request_id, "done", "Sent for review")
+        time.sleep(0.002)
+        failed = self.client.update_request(request_id, "failed", "Maintainer closed it")
+        time.sleep(0.002)
+        merged = self.client.update_request(request_id, "done", "Maintainer merged it")
+
+        self.assertEqual((failed["status"], failed["message"]),
+                         ("failed", "Maintainer closed it"))
+        self.assertGreater(int(failed["updated_ms"]), int(done["updated_ms"]))
+        self.assertEqual((merged["status"], merged["message"]),
+                         ("done", "Maintainer merged it"))
+        self.assertGreater(int(merged["updated_ms"]), int(failed["updated_ms"]))
+
+    def test_failed_request_can_be_retried(self) -> None:
+        request = self.server.add_request("Add a setting")
+        request_id = str(request["id"])
+        failed = self.client.update_request(request_id, "failed", "Try later")
+        time.sleep(0.002)
+        retried = self.client.update_request(request_id, "new", "")
+
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual((retried["status"], retried["message"]), ("new", ""))
+        self.assertGreater(int(retried["updated_ms"]), int(failed["updated_ms"]))
+
+    def test_old_phone_omits_features_and_rejects_followup_and_retry(self) -> None:
+        old_phone = FakePhone(
+            Path(self.temporary.name), token="test-token",
+            advertise_request_features=False,
+        ).start()
+        self.addCleanup(old_phone.close)
+        old_client = PhoneClient(
+            PhoneConfig(url=old_phone.url, token="test-token", timeout_s=2),
+        )
+        self.assertNotIn("requests", old_client.ping())
+
+        done_request = old_phone.add_request("Add a setting")
+        done_id = str(done_request["id"])
+        old_client.update_request(done_id, "working", "Working")
+        old_client.update_request(done_id, "done", "Initial result")
+        with self.assertRaises(PhoneError) as followup:
+            old_client.update_request(done_id, "failed", "Closed")
+        self.assertEqual((followup.exception.status, followup.exception.code),
+                         (409, "conflict"))
+
+        failed_request = old_phone.add_request("Fix a bug")
+        failed_id = str(failed_request["id"])
+        old_client.update_request(failed_id, "failed", "Initial failure")
+        with self.assertRaises(PhoneError) as retry:
+            old_client.update_request(failed_id, "new", "")
+        self.assertEqual((retry.exception.status, retry.exception.code),
+                         (409, "conflict"))
+
     def test_long_poll_wakes_when_request_is_added(self) -> None:
         result: list[dict[str, object]] = []
 

@@ -88,7 +88,7 @@ file access remains read-only.
 
 | Method & path | Query | Response |
 |---|---|---|
-| `GET /v1/ping` | — | `{"app":"tentacle","api":1,"version":"0.1.0","device":"<manufacturer model>","android_sdk":35,"roots":[{"id":"primary","path":"/storage/emulated/0","label":"Internal"}],"all_files_access":true,"time_ms":...,"timezone":"Asia/Shanghai"}` — `time_ms`/`timezone` are the phone's clock and IANA zone; the PC uses them for file-age checks and for interpreting timestamps in file names. Optional additive field `"tailnet":{"state":"running","ip":"100.64.0.1"}` while the embedded Tailscale node is enabled: `state` ∈ `starting` \| `needs_login` \| `running` \| `error` \| `stopped`, `ip` only while running. It never carries keys or login URLs. Optional additive field `"lan":["http://192.168.0.5:8765"]`: the phone's current Wi-Fi/Ethernet base URLs (no VPN, tailnet or cellular addresses), used by the PC to switch to a same-network path. Clients must ignore unknown fields. |
+| `GET /v1/ping` | — | `{"app":"tentacle","api":1,"version":"0.1.0","device":"<manufacturer model>","android_sdk":35,"roots":[{"id":"primary","path":"/storage/emulated/0","label":"Internal"}],"all_files_access":true,"time_ms":...,"timezone":"Asia/Shanghai"}` — `time_ms`/`timezone` are the phone's clock and IANA zone; the PC uses them for file-age checks and for interpreting timestamps in file names. Optional additive field `"tailnet":{"state":"running","ip":"100.64.0.1"}` while the embedded Tailscale node is enabled: `state` ∈ `starting` \| `needs_login` \| `running` \| `error` \| `stopped`, `ip` only while running. It never carries keys or login URLs. Optional additive field `"lan":["http://192.168.0.5:8765"]`: the phone's current Wi-Fi/Ethernet base URLs (no VPN, tailnet or cellular addresses), used by the PC to switch to a same-network path. Optional additive field `"requests":{"followup":true,"retry":true}` advertises final request-message updates and `failed → new` retry support; old apps omit it. Clients must ignore unknown fields. |
 | `GET /v1/ls` | `path`, `hidden=0\|1` (default 0) | `{"path":..., "entries":[Entry...]}` sorted dirs first then name |
 | `GET /v1/stat` | `path` | `Entry` |
 | `GET /v1/find` | `root` (path, default primary), `ext` (comma list, case-insensitive, no dot), `name` (case-insensitive substring), `since_ms`, `until_ms`, `type=file\|dir\|any` (default file), `max_depth` (default 12), `limit` (default 500, max 5000), `sort=mtime_desc\|mtime_asc\|name` (default mtime_desc) | `{"root":..., "entries":[Entry...], "truncated": bool}`. Walk skips `Android/data`, `Android/obb`, hidden dirs unless `hidden=1`; never follows symlinks out of roots. |
@@ -224,6 +224,7 @@ Lookup: `--config PATH` > `$TENTACLE_CONFIG` >
 | `[[sources]]` | Unique name, phone path, extensions, optional filename regex and timestamp format, `min_age_s`. |
 | `[calls]` | `timezone`, an optional IANA zone override for recording filenames. |
 | `[asr]` | Backend, language, model, diarisation, device, compute type, initial prompt, hotwords and command template. |
+| `[requests]` | Implementer command, repository, base and push/PR routing; optional personal fork/release and maintainer review command; tests, release, timeout and protected paths. |
 
 Modules receive `Config`; credentials and machine-specific settings stay out of
 source code. `TENTACLE_ASR_VERBOSE` enables verbose optional-backend output.
@@ -312,7 +313,17 @@ one; JSON output adds a `paths` list.
 source paths, ASR backend availability and CUDA. It has no agent, project,
 queue, database or daemon checks.
 
-### 5.3 Manual recordings — `calls.py`
+### 5.3 App requests
+
+`requests_cmd.py` owns the CLI, implementer prompt and watcher lifecycle.
+`requests_git.py` is the single wrapper boundary for GitHub CLI calls and owns
+shared Git/remote discovery. `requests_pr.py` owns upstream PR creation,
+localized phone messages and atomic follow-up state. `requests_review.py` owns
+the separate read-only maintainer prompt, review worktrees, decisions, merge
+and version-bump release flow. Their phone contract and security boundaries are
+specified in [REQUESTS.md](REQUESTS.md).
+
+### 5.4 Manual recordings — `calls.py`
 
 ```text
 tentacle calls [--since 7d] [--until DATE] [--source NAME] [--with TEXT]
@@ -351,7 +362,7 @@ complete audio selects the transcript cache; a hit avoids ASR unless `--force`.
 Stdout contains transcript text by default, or the unchanged JSON contract with
 `--json`. `-o PREFIX` also exports `PREFIX.json` and `PREFIX.txt`.
 
-### 5.4 ASR contract and cache
+### 5.5 ASR contract and cache
 
 `asr.transcribe(audio_path, cfg.asr)` returns this fixed shape:
 
@@ -376,7 +387,7 @@ lazily and models are cached per process. Text rendering uses
 
 There is no database. Cache files are local artifacts and must not be committed.
 
-### 5.5 Exit codes
+### 5.6 Exit codes
 
 `0` means success; `1` means an operation failed (phone, transfer, ASR or
 diagnostics); `2` means usage/configuration error, including missing pairing;

@@ -280,6 +280,13 @@ class MainActivity : Activity() {
         }
         if (intent.getBooleanExtra("request_send", false)) requestSend.performClick()
         if (intent.getBooleanExtra("request_bug", false)) requestBug.performClick()
+        if (intent.getBooleanExtra("request_retry_first_failed", false)) {
+            intent.removeExtra("request_retry_first_failed")
+            refreshRequests()
+            requestStore.list().firstOrNull { it.status == "failed" }?.let {
+                content.findViewWithTag<Button>("request_retry:${it.id}")?.performClick()
+            }
+        }
         if (intent.getBooleanExtra("crash_test", false)) {
             intent.removeExtra("crash_test")
             scroll.post { throw RuntimeException("Crash test") }
@@ -594,6 +601,16 @@ class MainActivity : Activity() {
         requestsMore.body.visibility = if (hasMore && requestsMore.open) View.VISIBLE else View.GONE
     }
 
+    private fun retryRequest(id: String) {
+        try {
+            requestStore.update(id, "new", "")
+            Toast.makeText(this, R.string.requests_retried, Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {
+            Toast.makeText(this, R.string.requests_save_failed, Toast.LENGTH_LONG).show()
+        }
+        refreshRequests()
+    }
+
     private fun requestRow(parent: LinearLayout, request: AppRequest, now: Long) {
         val box = column().apply {
             background = rounded(color(R.color.bg), 14)
@@ -605,7 +622,7 @@ class MainActivity : Activity() {
         val header = row(box).apply { gravity = Gravity.CENTER_VERTICAL }
         text(header, getString(if (request.kind == "bug") R.string.requests_kind_bug else R.string.requests_kind_change),
             14f, bold = true).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
-        text(header, getString(R.string.requests_time_ago, relativeAge(now - request.createdMs)), 12f, secondary = true)
+        text(header, getString(R.string.requests_time_ago, relativeAge(now - request.updatedMs)), 12f, secondary = true)
         if (request.text.isNotEmpty()) {
             text(box, request.text, 14f).apply {
                 maxLines = 2
@@ -618,7 +635,20 @@ class MainActivity : Activity() {
             "failed" -> R.string.requests_status_failed to Tone.BAD
             else -> R.string.requests_status_waiting to Tone.WARN
         }
-        text(box, getString(status), 14f, bold = true).setTextColor(statusColor(tone))
+        val statusRow = row(box).apply { gravity = Gravity.CENTER_VERTICAL }
+        text(statusRow, getString(status), 14f, bold = true).apply {
+            setTextColor(statusColor(tone))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        if (request.status == "failed") {
+            button(statusRow, getString(R.string.requests_retry), ButtonKind.OUTLINE) {
+                retryRequest(request.id)
+            }.apply {
+                tag = "request_retry:${request.id}"
+                textSize = 13f
+                setPadding(dp(12), 0, dp(12), 0)
+            }
+        }
         if (request.message.isNotEmpty()) text(box, request.message, 13f, secondary = true)
     }
 

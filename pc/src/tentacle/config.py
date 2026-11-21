@@ -99,6 +99,12 @@ class RequestsConfig:
     command: str = ""
     shell: list[str] = field(default_factory=lambda: ["bash", "-lc"])
     repo: str = ""
+    base: str = ""
+    push_remote: str = "origin"
+    pr_repo: str = ""
+    fork_repo: str = ""
+    fork_release: str = ""
+    review_command: str = ""
     release: str = ""
     test: str = ""
     push: str = "git push"
@@ -107,12 +113,16 @@ class RequestsConfig:
     protected: list[str] = field(default_factory=lambda: list(_DEFAULT_REQUEST_PROTECTED))
 
     def __post_init__(self) -> None:
-        string_fields = ("command", "repo", "release", "test", "push", "prompt_template")
+        string_fields = ("command", "repo", "base", "push_remote", "pr_repo",
+                         "fork_repo", "fork_release", "review_command", "release",
+                         "test", "push", "prompt_template")
         for name in string_fields:
             if not isinstance(getattr(self, name), str):
                 raise ConfigError(f"[requests] {name} must be a string")
         if not self.push.strip():
             raise ConfigError("[requests] push must not be empty")
+        if not self.push_remote.strip():
+            raise ConfigError("[requests] push_remote must not be empty")
         if (not isinstance(self.shell, list) or not self.shell
                 or not all(isinstance(part, str) and part for part in self.shell)):
             raise ConfigError("[requests] shell must be a non-empty array of non-empty strings")
@@ -125,6 +135,10 @@ class RequestsConfig:
     @property
     def repo_path(self) -> Path | None:
         return Path(_expand(self.repo)) if self.repo else None
+
+    @property
+    def fork_repo_path(self) -> Path | None:
+        return Path(_expand(self.fork_repo)) if self.fork_repo else None
 
     @property
     def prompt_template_path(self) -> Path | None:

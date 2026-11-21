@@ -35,6 +35,11 @@ class RequestSetupTests(unittest.TestCase):
     def test_setup_writes_only_requests_and_updates_existing_values(self):
         self.assertEqual(self.setup('--command', 'my-agent --prompt-file {prompt_file}',
                                     '--repo', str(self.root), '--shell', 'bash -ic',
+                                    '--base', 'main', '--push-remote', 'upstream',
+                                    '--pr-repo', 'owner/tentacle',
+                                    '--fork-repo', str(self.root / 'personal'),
+                                    '--fork-release', 'fake-fork-release',
+                                    '--review-command', 'fake-reviewer',
                                     '--release', 'fake-release', '--test', 'fake-test',
                                     '--push', 'git push local', '--timeout', '2h')[0], 0)
         parsed = tomllib.loads(self.path.read_text())
@@ -42,6 +47,12 @@ class RequestSetupTests(unittest.TestCase):
         self.assertEqual(parsed['requests']['shell'], ['bash', '-ic'])
         self.assertEqual(parsed['requests']['timeout_s'], 7200)
         self.assertEqual(parsed['requests']['repo'], str(self.root))
+        self.assertEqual(parsed['requests']['base'], 'main')
+        self.assertEqual(parsed['requests']['push_remote'], 'upstream')
+        self.assertEqual(parsed['requests']['pr_repo'], 'owner/tentacle')
+        self.assertEqual(parsed['requests']['fork_repo'], str(self.root / 'personal'))
+        self.assertEqual(parsed['requests']['fork_release'], 'fake-fork-release')
+        self.assertEqual(parsed['requests']['review_command'], 'fake-reviewer')
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
         self.setup('--command', 'new-fake-command')
         updated = config.load(self.path)
@@ -55,6 +66,15 @@ class RequestSetupTests(unittest.TestCase):
         self.setup('--command', command + ' --prompt-file {prompt_file}')
         self.assertEqual(config.load(self.path).requests.command,
                          command + ' --prompt-file {prompt_file}')
+
+    def test_setup_can_add_fork_or_reviewer_without_repeating_command(self):
+        self.setup('--command', 'fake-agent')
+        self.setup('--fork-repo', str(self.root / 'personal'))
+        self.setup('--review-command', 'fake-reviewer')
+        requests = config.load(self.path).requests
+        self.assertEqual(requests.command, 'fake-agent')
+        self.assertEqual(requests.fork_repo_path, self.root / 'personal')
+        self.assertEqual(requests.review_command, 'fake-reviewer')
 
     def test_invalid_setup_never_changes_config(self):
         original = self.path.read_text()

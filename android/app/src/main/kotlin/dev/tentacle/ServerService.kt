@@ -100,6 +100,7 @@ class ServerService : Service() {
                             tailnet = TailnetStatus.value.pingJson(),
                             lan = DeviceEnvironment.addresses(this).filter { it.priority == 0 }
                                 .map { "http://${it.host}:${settings.port}" },
+                            requests = mapOf("followup" to true, "retry" to true),
                         )
                     },
                 )

@@ -9,9 +9,16 @@ the single source of truth for module boundaries and contracts.
   IPs, hostnames, phone models, tokens). Every tunable goes through
   `pc/src/tentacle/config.py` + `config.example.toml` (PC) or the app's
   settings (Android). Tests use temp dirs and fake servers.
-- **Contracts are fixed.** Do not change the phone HTTP API, the transcript
-  JSON shape, the documented cache layout, or `config.py` field names on
-  your own. If your module truly needs a change, stop and report it.
+- **Contracts stay compatible within a major version.** The phone HTTP API,
+  transcript JSON, documented cache layout and `config.py` field names may grow
+  additively: new endpoints and optional fields or values are allowed, but
+  existing items must not be removed, renamed, retyped or given a new meaning.
+  Old app + new computer and new app + old computer must keep working. Clients
+  ignore unknown fields; the computer detects optional support through `ping`
+  fields or 404/409 responses and degrades with a plain message. Breaking
+  changes require a new major version and a maintainer decision, never an app
+  request. Document every API addition in `docs/ARCHITECTURE.md` and its
+  feature contract (`docs/REQUESTS.md` or `docs/NOTIFY.md`) in the same change.
 - **Stay inside your module's files.** A task names the files it owns; don't
   edit others (shared files like `cli.py` already load modules via
   `add_commands(subparsers)`).
@@ -28,7 +35,9 @@ the single source of truth for module boundaries and contracts.
 - English for code, comments, CLI messages, and docs. Android user-visible text
   is localized in English and Simplified Chinese string resources.
 - Never commit secrets, recordings, transcripts, or build outputs.
-- Don't `git commit`; the maintainer reviews and commits.
+- Don't `git commit`; the maintainer reviews and commits. The exception is a
+  coding agent invoked by a request run, whose fixed prompt requires a commit
+  on the request branch.
 
 ## Product scope
 
@@ -45,13 +54,29 @@ the single source of truth for module boundaries and contracts.
 
 ## Requests from the app
 
-App requests arrive through `tentacle requests watch`. When its fixed prompt
-invokes a coding agent, read and obey that prompt: implement only the requested
-Tentacle change, add or update tests, run them, bump the patch versions, commit
-the result, and write the required 1–3 sentence phone-owner summary to
-`TENTACLE_RESULT_FILE`. Do not push or release; the watcher performs both after
-checking the commit. For a successful no-change result write `Done: ...`; for a
-refusal, unclear request, or unfound bug cause write `Failed: ...`.
+App requests arrive through `tentacle requests watch`. Its implementer agent
+decides whether the change belongs upstream (useful to most Tentacle users) or
+in the phone owner's personal fork. It implements only the requested change,
+adds or updates tests, runs them, commits on the request branch and writes
+`Target: upstream` or `Target: personal` as the first line of
+`TENTACLE_RESULT_FILE`, followed by the required 1–3 sentence phone-owner
+summary. It does not bump versions on an upstream PR branch. When the watcher
+reruns a personal request in the configured fork checkout, it bumps the patch
+versions before committing. It never pushes, opens a PR or releases. For a
+successful no-change result the summary starts with `Done:`; for a refusal,
+unclear request or unfound bug cause it starts with `Failed:`.
 
-The computer-side configuration and fixed prompt live in
-`pc/src/tentacle/requests_cmd.py` and `pc/src/tentacle/config.py`.
+### Two roles
+
+- The **implementer** handles one owner's request in a writable request branch.
+  The watcher checks it and either opens an upstream PR or uses a configured
+  separate personal-fork checkout.
+- The **maintainer** reviews upstream PRs in a fresh read-only worktree with a
+  separate fixed prompt. The reviewer may only inspect files and diffs and
+  write its decision; the watcher owns tests, merge, version bump, push and
+  release after approval.
+
+Computer-side CLI and implementer prompting live in
+`pc/src/tentacle/requests_cmd.py`; Git/GitHub helpers, PR follow-up and
+maintainer review live in `requests_git.py`, `requests_pr.py` and
+`requests_review.py`. Configuration lives in `pc/src/tentacle/config.py`.

@@ -71,6 +71,8 @@
     <string name="requests_send">发送</string>
     <string name="requests_bug">上传日志并修复</string>
     <string name="requests_sent">已发送给电脑</string>
+    <string name="requests_retry">重试</string>
+    <string name="requests_retried">已重新发送给电脑</string>
     <string name="requests_invalid">请缩短到 1000 个汉字或单词以内，并删除控制字符。</string>
     <string name="requests_save_failed">无法保存需求，请重试。</string>
     <string name="requests_checked">电脑在 %1$s前检查过</string>

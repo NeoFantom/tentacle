@@ -105,7 +105,11 @@ class RequestStore(
             if (status !in TRANSITIONS.getValue(old.status)) {
                 throw ApiException(409, "conflict", "Request status transition is not allowed")
             }
-            val result = old.copy(status = status, message = message, updatedMs = clock())
+            val result = old.copy(
+                status = status,
+                message = if (old.status == "failed" && status == "new") "" else message,
+                updatedMs = clock(),
+            )
             val next = requests.toMutableList().apply { this[index] = result }
             persist(next, lastPolledMs)
             requests = next
@@ -258,8 +262,8 @@ class RequestStore(
         private val TRANSITIONS = mapOf(
             "new" to setOf("working", "failed"),
             "working" to setOf("done", "failed", "new"),
-            "done" to emptySet(),
-            "failed" to emptySet(),
+            "done" to setOf("done", "failed"),
+            "failed" to setOf("done", "failed", "new"),
         )
     }
 }
