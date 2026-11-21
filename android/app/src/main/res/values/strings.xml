@@ -17,14 +17,15 @@
     <string name="status_stopped_text">Tap Start so your computer can read files on this phone.</string>
     <string name="status_failed_title">Couldn\'t start</string>
     <string name="status_failed_text">Allow file access below, or choose another port in Settings, then tap Start again.</string>
-    <string name="status_ready_title">Ready for your computer</string>
+    <string name="status_ready_title">File server running</string>
     <string name="status_ready_text">Running on port %1$d. Read-only: your computer can browse and download, never change anything.</string>
     <string name="status_no_path_title">Running, but no way in yet</string>
     <string name="status_no_path_text">Connect this phone to Wi-Fi, or turn on Tailscale or Own server below.</string>
     <string name="status_attention_title">Can\'t read files yet</string>
     <string name="status_attention_text">Allow access to all files below, otherwise your computer sees empty folders.</string>
-    <string name="way_lan">Same Wi-Fi</string>
-    <string name="way_lan_none">Not on Wi-Fi</string>
+    <string name="way_lan">Phone local network</string>
+    <string name="way_lan_none">No local address</string>
+    <string name="way_lan_note">This is the phone\'s Wi-Fi / Ethernet address. Computer access is not checked; it requires the same network without device isolation. On other networks, use Tailscale or Own server.</string>
     <string name="way_off">Off</string>
     <string name="way_connected">Connected</string>
     <string name="way_problem">Problem, tap to see</string>
@@ -99,7 +100,7 @@
 
     <!-- Ways to connect -->
     <string name="ways_title">Ways to connect</string>
-    <string name="ways_lan_note">Same Wi-Fi works automatically. For other networks, use one of these:</string>
+    <string name="ways_lan_note">The phone\'s local address works only if the computer can reach it on the same network without device isolation. For other networks, use one of these:</string>
     <string name="needs_server">Start the file server to connect.</string>
     <string name="tailnet_title">Tailscale (built-in)</string>
     <string name="tailnet_builtin_short">Tailscale (built-in)</string>

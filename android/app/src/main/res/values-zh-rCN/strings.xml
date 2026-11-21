@@ -17,14 +17,15 @@
     <string name="status_stopped_text">点“启动”，电脑就能读取这台手机上的文件。</string>
     <string name="status_failed_title">启动失败</string>
     <string name="status_failed_text">请先在下方允许访问文件，或在“设置”里换一个端口，然后再点“启动”。</string>
-    <string name="status_ready_title">已就绪，电脑可以连接</string>
+    <string name="status_ready_title">文件服务已运行</string>
     <string name="status_ready_text">正在端口 %1$d 运行。只读：电脑只能浏览和下载，不会改动任何文件。</string>
     <string name="status_no_path_title">已运行，但还没有可用的连接方式</string>
     <string name="status_no_path_text">请连接 Wi-Fi，或在下方打开 Tailscale 或自有服务器。</string>
     <string name="status_attention_title">还不能读取文件</string>
     <string name="status_attention_text">请在下方允许访问所有文件，否则电脑看到的都是空文件夹。</string>
-    <string name="way_lan">同一 Wi-Fi</string>
-    <string name="way_lan_none">未连接 Wi-Fi</string>
+    <string name="way_lan">手机本地网络</string>
+    <string name="way_lan_none">暂无本地地址</string>
+    <string name="way_lan_note">这是手机的 Wi-Fi / 以太网地址，未验证电脑是否可达；需要电脑在同一网络且未开启设备隔离。不在同一网络时，请用 Tailscale 或自有服务器。</string>
     <string name="way_off">未开启</string>
     <string name="way_connected">已连接</string>
     <string name="way_problem">有问题，点此查看</string>
@@ -99,7 +100,7 @@
 
     <!-- Ways to connect -->
     <string name="ways_title">连接方式</string>
-    <string name="ways_lan_note">同一 Wi-Fi 下自动可用。不在同一网络时，用下面任意一种：</string>
+    <string name="ways_lan_note">手机的本地地址需要电脑在同一网络、且未开启设备隔离时才可连接。不在同一网络时，用下面任意一种：</string>
     <string name="needs_server">启动文件服务后才能连接。</string>
     <string name="tailnet_title">Tailscale（内置）</string>
     <string name="tailnet_builtin_short">Tailscale（内置）</string>

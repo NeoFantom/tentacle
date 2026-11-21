@@ -136,6 +136,10 @@ card only while a permission is missing, and keeps requests, pairing, connection
 configuration and app settings collapsed by default. Disclosure state and the
 request draft survive activity recreation. Connection status shortcuts expand
 the connection configuration before scrolling to the relevant option.
+The local-network row identifies the phone's Wi-Fi/Ethernet address only,
+uses a neutral indicator, and explains that computer reachability is unverified.
+An address on the phone does not establish that a paired computer shares its
+network. The running-service title does not claim a computer connection.
 The request card shows a compact latest-status summary while collapsed and
 creates feature requests and bug requests with a redacted log snapshot when
 expanded. History is a separate collapsed disclosure; rows show short previews

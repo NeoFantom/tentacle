@@ -13,6 +13,14 @@ standard pieces (HTTP, TLS, SSH, a VPN mesh).
 | **Tailscale app** | local server on + Tailscale app | `http://<phone 100.x IP>:8765` | both in the same tailnet, no other VPN app on the phone |
 | **Own server (SSH tunnel)** | local server on + SSH tunnel to your server | `https://<your server>/<path>` | both can reach your server over the Internet |
 
+The app's **Phone local network** row displays this phone's Wi-Fi/Ethernet
+address, even when the computer is elsewhere. It is a candidate address, not a
+measurement of the computer's network or an active connection. Its neutral
+indicator and note mean computer reachability has not been checked. LAN access
+requires a shared reachable network without client isolation; use Tailscale or
+the SSH reverse tunnel when the computer is on another network. The file-server
+running status describes the phone service, not a confirmed computer connection.
+
 Modes combine. The app's "Copy pairing link" puts every working address into
 one link (built-in tailnet, Wi-Fi, other interfaces, public URL); `tentacle
 pair` stores them as `phone.urls` and every command races them and uses the
