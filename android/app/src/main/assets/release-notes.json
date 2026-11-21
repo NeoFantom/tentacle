@@ -1,7 +1,7 @@
 {
   "notes": [
     {
-      "version": "unreleased",
+      "version": "0.7.7",
       "en": [
         "Alerts now come in three strengths: Normal, Ring (vibrate, sound or both) and Forced.",
         "A Forced alert rings at full alarm volume until you answer a simple question, then puts your volume back.",

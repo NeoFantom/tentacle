@@ -29,8 +29,8 @@ android {
         applicationId = "dev.tentacle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.7.6"
+        versionCode = 19
+        versionName = "0.7.7"
         // A resource, not a BuildConfig constant: Kotlin inlines Java constants, and an
         // incremental build after a build without -Ptentacle.updateRepo kept the empty value.
         resValue("string", "update_repo", updateRepo)
