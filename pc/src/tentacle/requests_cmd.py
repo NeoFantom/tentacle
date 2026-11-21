@@ -41,6 +41,8 @@ tests; commit with a clear message. First decide whether this serves most users
 (Target: upstream) or only this owner (Target: personal). Do not bump versions on
 upstream PR branches: the maintainer bumps them after merge. In a configured
 personal fork, bump the patch versions for changed code before committing.
+For a user-visible change add one plain-language English and Chinese bullet to the
+'unreleased' entry of android/app/src/main/assets/release-notes.json (see AGENTS.md).
 Phone HTTP API, transcript JSON, cache layout and config field names may evolve
 only additively within a major version. Never remove, rename, retype or change
 existing meanings. Old app/new computer and new app/old computer must work;

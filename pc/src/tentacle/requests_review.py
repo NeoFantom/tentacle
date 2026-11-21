@@ -143,6 +143,36 @@ def bump_versions(repo: Path) -> str:
     return new_version
 
 
+RELEASE_NOTES = "android/app/src/main/assets/release-notes.json"
+FALLBACK_NOTES = {"en": ["Small fixes and improvements."], "zh": ["小修复和改进。"]}
+
+
+def name_release_notes(repo: Path, version: str) -> bool:
+    """Give the pending release notes their version; returns whether the file changed.
+
+    Renames the `unreleased` entry, or adds a short generic entry when a merged
+    change carried no notes, so scripts/release.sh never refuses the release.
+    """
+    path = repo / RELEASE_NOTES
+    if not path.exists():
+        return False
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        notes = document["notes"]
+        assert isinstance(notes, list)
+    except (OSError, ValueError, KeyError, AssertionError) as exc:
+        raise ReviewFailure("release-notes.json is unreadable; not releasing.") from exc
+    if any(isinstance(e, dict) and e.get("version") == version for e in notes):
+        return False
+    pending = next((e for e in notes if isinstance(e, dict) and e.get("version") == "unreleased"), None)
+    if pending is not None:
+        pending["version"] = version
+    else:
+        notes.insert(0, {"version": version, **FALLBACK_NOTES})
+    path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
 class ReviewRunner:
     """Review at most one eligible PR and perform the maintainer decision."""
 
@@ -249,6 +279,8 @@ class ReviewRunner:
         version = bump_versions(repo)
         self.watcher.git(repo, "add", "android/app/build.gradle.kts", "pc/pyproject.toml",
                          "pc/src/tentacle/__init__.py")
+        if name_release_notes(repo, version):
+            self.watcher.git(repo, "add", RELEASE_NOTES)
         self.watcher.git(repo, "commit", "-m", f"Release {version}")
         self.watcher.git(repo, "push", remote, base)
         if self.options.release:

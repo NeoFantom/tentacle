@@ -242,6 +242,24 @@ class RequestsReviewTests(unittest.TestCase):
         self.assertIn('version = "1.2.4"', (fixture / "pc/pyproject.toml").read_text())
         self.assertIn('__version__ = "1.2.4"', (fixture / "pc/src/tentacle/__init__.py").read_text())
 
+    def test_release_notes_get_the_new_version(self) -> None:
+        from tentacle.requests_review import RELEASE_NOTES, name_release_notes
+        repo = self.root / "notes"
+        path = repo / RELEASE_NOTES
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"notes": [
+            {"version": "unreleased", "en": ["New"], "zh": ["新"]},
+            {"version": "1.2.3", "en": ["Old"], "zh": ["旧"]}]}), encoding="utf-8")
+        self.assertTrue(name_release_notes(repo, "1.2.4"))
+        notes = json.loads(path.read_text(encoding="utf-8"))["notes"]
+        self.assertEqual([n["version"] for n in notes], ["1.2.4", "1.2.3"])
+        self.assertFalse(name_release_notes(repo, "1.2.4"))
+        self.assertTrue(name_release_notes(repo, "1.2.5"))
+        notes = json.loads(path.read_text(encoding="utf-8"))["notes"]
+        self.assertEqual(notes[0]["version"], "1.2.5")
+        self.assertTrue(notes[0]["en"] and notes[0]["zh"])
+        self.assertFalse(name_release_notes(self.root / "missing", "1.0.0"))
+
     def test_close_records_head_and_removes_worktree(self) -> None:
         head = self.add_pr_commit()
         watcher = FakeWatcher(self.root, self.repo, self.remote, decision="close")
