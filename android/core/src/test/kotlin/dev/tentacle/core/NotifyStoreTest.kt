@@ -52,6 +52,11 @@ class NotifyStoreTest {
             store.post("Title", "Different", "normal", "stable")
         }
         assertEquals(409, conflict.status)
+
+        val ring = store.post("Ring", "Text", "ring", "ring_alias")
+        val urgent = store.post("Ring", "Text", "urgent", "ring_alias")
+        assertEquals("urgent", ring.message.requestedLevel)
+        assertEquals(ring, urgent)
     }
 
     @Test
@@ -69,6 +74,14 @@ class NotifyStoreTest {
         repeat(3) { urgent.post(null, "urgent $it", "urgent", "u$it") }
         assertEquals(429, assertThrows(ApiException::class.java) {
             urgent.post(null, "urgent excess", "urgent", "u3")
+        }.status)
+
+        val shared = store(clock = { now })
+        shared.post(null, "forced one", "forced", "f1")
+        shared.post(null, "ring two", "ring", "f2")
+        shared.post(null, "forced three", "forced", "f3")
+        assertEquals(429, assertThrows(ApiException::class.java) {
+            shared.post(null, "shared excess", "urgent", "f4")
         }.status)
 
         val downgraded = store(clock = { now }, prepare = {
@@ -178,6 +191,99 @@ class NotifyStoreTest {
 
         store.post(null, "No response", null, "timeout")
         assertEquals("shown", store.awaitChange("timeout", 20).state)
+    }
+
+    @Test
+    fun `forced transitions require timeout answer or deliberate disable`() {
+        var now = 100L
+        val store = store(clock = { now })
+        store.post(null, "First", "forced", "first")
+        store.post(null, "Second", "forced", "second")
+        assertEquals(400, assertThrows(ApiException::class.java) {
+            store.transition("first", "acknowledged")
+        }.status)
+        assertEquals(400, assertThrows(ApiException::class.java) {
+            store.transition("first", "dismissed")
+        }.status)
+        assertEquals(400, assertThrows(ApiException::class.java) {
+            store.post(null, "Normal", "normal", "normal")
+            store.transition("normal", "timeout")
+        }.status)
+
+        now = 200L
+        val answered = store.transitionForcedAnswered("first")
+        assertEquals(setOf("first", "second"), answered.map { it.message.id }.toSet())
+        assertTrue(answered.all { it.state == "acknowledged" && it.acknowledgedMs == 200L })
+
+        now += NotifyStore.URGENT_WINDOW_MS
+        store.post(null, "Cap", "forced", "cap")
+        store.post(null, "Other shown", "forced", "other")
+        assertEquals("timeout", store.transition("cap", "timeout").state)
+        val afterTimeoutAnswer = store.transitionForcedAnswered("cap")
+        assertEquals("timeout", afterTimeoutAnswer.first { it.message.id == "cap" }.state)
+        assertEquals("acknowledged", afterTimeoutAnswer.first { it.message.id == "other" }.state)
+
+        store.post(null, "Disable", "forced", "disable")
+        assertEquals("dismissed", store.transitionForcedDismissed("disable").state)
+    }
+
+    @Test
+    fun `delivery validation permits only documented downgrades`() {
+        val urgentDown = store(prepare = {
+            NotifyDelivery("normal", downgraded = true, reason = "urgent_not_allowed")
+        })
+        assertEquals("normal", urgentDown.post(null, "ring", "ring", "ring").delivery.level)
+
+        listOf("urgent", "normal").forEach { delivered ->
+            val forcedDown = store(prepare = {
+                NotifyDelivery(delivered, downgraded = true, reason = "forced_not_allowed")
+            })
+            assertEquals(delivered, forcedDown.post(null, "forced", "forced", "forced_$delivered").delivery.level)
+        }
+
+        assertThrows(IllegalStateException::class.java) {
+            store(prepare = { NotifyDelivery("forced") }).post(null, "upgrade", "urgent", "upgrade")
+        }
+        assertThrows(IllegalStateException::class.java) {
+            store(prepare = { NotifyDelivery("normal", downgraded = true, reason = "wrong") })
+                .post(null, "wrong reason", "forced", "wrong")
+        }
+
+        listOf(
+            Triple("urgent", "urgent_not_allowed", "channel_blocked"),
+            Triple("forced", "forced_not_allowed", "notifications_disabled"),
+        ).forEach { (requested, downgradeReason, failureReason) ->
+            val unavailable = store(
+                prepare = { NotifyDelivery("normal", downgraded = true, reason = downgradeReason) },
+                deliver = { _, delivery -> delivery.copy(shown = false, reason = failureReason) },
+            ).post(null, "unavailable", requested, "unavailable_$requested")
+            assertEquals(false, unavailable.delivery.shown)
+            assertEquals(failureReason, unavailable.delivery.reason)
+        }
+    }
+
+    @Test
+    fun `stale forced answer cannot acknowledge later forced alerts`() {
+        val store = store()
+        store.post(null, "Old", "forced", "old")
+        store.transitionForcedDismissed("old")
+        store.post(null, "New", "forced", "new")
+        assertEquals(400, assertThrows(ApiException::class.java) {
+            store.transitionForcedAnswered("old")
+        }.status)
+        assertEquals("shown", store.get("new").state)
+    }
+
+    @Test
+    fun `forced runtime failure may expire without pretending the owner responded`() {
+        val store = store()
+        store.post(null, "Cannot remain active", "forced", "failed")
+        val expired = store.transition("failed", "expired")
+        assertEquals("expired", expired.state)
+        assertEquals(null, expired.acknowledgedMs)
+        assertEquals(400, assertThrows(ApiException::class.java) {
+            store.transitionForcedAnswered("failed")
+        }.status)
     }
 
     @Test

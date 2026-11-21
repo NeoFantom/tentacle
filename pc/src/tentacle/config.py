@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import os
+import shlex
 import tomllib
 from dataclasses import dataclass, field
 from importlib import resources
@@ -84,6 +85,29 @@ class AsrConfig:
     command: list[str] = field(default_factory=list)
 
 
+@dataclass
+class NotifyConfig:
+    question_command: str = ""
+    question_timeout_s: float = 300
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.question_command, str):
+            raise ConfigError("[notify] question_command must be a string")
+        if (isinstance(self.question_timeout_s, bool)
+                or not isinstance(self.question_timeout_s, (int, float))
+                or not math.isfinite(self.question_timeout_s)
+                or self.question_timeout_s <= 0):
+            raise ConfigError("[notify] question_timeout_s must be a positive finite number")
+        try:
+            shlex.split(self.question_command)
+        except ValueError as exc:
+            raise ConfigError(f"[notify] invalid question_command: {exc}") from exc
+
+    @property
+    def question_argv(self) -> list[str]:
+        return shlex.split(self.question_command)
+
+
 _DEFAULT_REQUEST_PROTECTED = [
     ".github/**",
     "**/*.jks",
@@ -152,6 +176,7 @@ class Config:
     sources: list[SourceConfig] = field(default_factory=list)
     calls: CallsConfig = field(default_factory=CallsConfig)
     asr: AsrConfig = field(default_factory=AsrConfig)
+    notify: NotifyConfig = field(default_factory=NotifyConfig)
     requests: RequestsConfig = field(default_factory=RequestsConfig)
     path: Path | None = None  # file this config was loaded from
 
@@ -162,7 +187,7 @@ class Config:
 
 _SECTIONS = {
     "phone": PhoneConfig, "storage": StorageConfig, "calls": CallsConfig,
-    "asr": AsrConfig, "requests": RequestsConfig,
+    "asr": AsrConfig, "notify": NotifyConfig, "requests": RequestsConfig,
 }
 
 

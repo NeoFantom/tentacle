@@ -52,11 +52,14 @@ class NotifyStore(
     private val changed = lock.newCondition()
     private var entries = mutableListOf<NotifyEntry>()
     private val normalDeliveries = ArrayDeque<Long>()
-    private val urgentDeliveries = ArrayDeque<Long>()
+    private val alertDeliveries = ArrayDeque<Long>()
 
     fun post(title: String?, text: String, level: String?, id: String?): NotifyEntry {
         val normalizedTitle = title ?: DEFAULT_TITLE
-        val normalizedLevel = level ?: NORMAL
+        val normalizedLevel = when (level ?: NORMAL) {
+            RING -> URGENT
+            else -> level ?: NORMAL
+        }
         validate(normalizedTitle, text, normalizedLevel, id)
         return lock.withLock {
             val actualId = id ?: allocateId()
@@ -91,6 +94,12 @@ class NotifyStore(
             if (index < 0) throw ApiException(404, "not_found", "Notification was not found")
             val old = entries[index]
             if (old.state != "shown") return@withLock old
+            if (old.delivery.level == FORCED && state != TIMEOUT && state != "expired") {
+                throw ApiException(400, "bad_request", "A forced alert requires an answer")
+            }
+            if (state == TIMEOUT && old.delivery.level != FORCED) {
+                throw ApiException(400, "bad_request", "Only a forced alert can time out")
+            }
             val updated = old.copy(
                 state = state,
                 acknowledgedMs = if (state == "acknowledged") clock() else null,
@@ -98,6 +107,41 @@ class NotifyStore(
             entries[index] = updated
             changed.signalAll()
             updated
+        }
+    }
+
+    /** A correct answer stops and acknowledges every forced alert still awaiting an answer. */
+    fun transitionForcedAnswered(id: String): List<NotifyEntry> = lock.withLock {
+        val target = find(id)
+        if (target.delivery.level != FORCED) {
+            throw ApiException(400, "bad_request", "Notification is not a forced alert")
+        }
+        if (target.state != "shown" && target.state != TIMEOUT) {
+            throw ApiException(400, "bad_request", "Forced alert is no longer awaiting an answer")
+        }
+        val acknowledgedAt = clock()
+        val updated = mutableListOf<NotifyEntry>()
+        entries = entries.map { entry ->
+            if (entry.delivery.level == FORCED && entry.state == "shown") {
+                entry.copy(state = "acknowledged", acknowledgedMs = acknowledgedAt).also(updated::add)
+            } else entry
+        }.toMutableList()
+        if (updated.isNotEmpty()) changed.signalAll()
+        if (target.state == "shown") updated else listOf(target) + updated
+    }
+
+    /** Used only when the owner deliberately disables forced alerts while one is active. */
+    fun transitionForcedDismissed(id: String): NotifyEntry = lock.withLock {
+        val index = entries.indexOfFirst { it.message.id == id }
+        if (index < 0) throw ApiException(404, "not_found", "Notification was not found")
+        val old = entries[index]
+        if (old.delivery.level != FORCED) {
+            throw ApiException(400, "bad_request", "Notification is not a forced alert")
+        }
+        if (old.state != "shown") return@withLock old
+        old.copy(state = "dismissed").also {
+            entries[index] = it
+            changed.signalAll()
         }
     }
 
@@ -141,12 +185,24 @@ class NotifyStore(
     }
 
     private fun validateDelivery(message: NotifyMessage, delivery: NotifyDelivery): NotifyDelivery {
-        if (delivery.level !in LEVELS) throw IllegalStateException("Invalid delivered notification level")
-        if (message.requestedLevel == NORMAL && delivery.level != NORMAL) {
-            throw IllegalStateException("A normal notification cannot be upgraded")
+        if (delivery.level !in DELIVERED_LEVELS) throw IllegalStateException("Invalid delivered notification level")
+        val allowed = when (message.requestedLevel) {
+            NORMAL -> setOf(NORMAL)
+            URGENT -> setOf(URGENT, NORMAL)
+            FORCED -> setOf(FORCED, URGENT, NORMAL)
+            else -> emptySet()
         }
-        if (delivery.downgraded != (message.requestedLevel == URGENT && delivery.level == NORMAL)) {
+        if (delivery.level !in allowed) throw IllegalStateException("Notification level cannot be upgraded")
+        if (delivery.downgraded != (delivery.level != message.requestedLevel)) {
             throw IllegalStateException("Notification downgrade metadata does not match its level")
+        }
+        val requiredReason = when {
+            message.requestedLevel == URGENT && delivery.level == NORMAL -> "urgent_not_allowed"
+            message.requestedLevel == FORCED && delivery.level != FORCED -> "forced_not_allowed"
+            else -> null
+        }
+        if (requiredReason != null && delivery.shown && delivery.reason != requiredReason) {
+            throw IllegalStateException("Notification downgrade reason does not match its level")
         }
         if (delivery.reason != null && (delivery.reason.isEmpty() || delivery.reason.hasDisallowedControl())) {
             throw IllegalStateException("Invalid notification delivery reason")
@@ -155,8 +211,8 @@ class NotifyStore(
     }
 
     private fun checkRateLimit(level: String, now: Long) {
-        val (events, window, maximum) = if (level == URGENT) {
-            Triple(urgentDeliveries, URGENT_WINDOW_MS, URGENT_LIMIT)
+        val (events, window, maximum) = if (level == URGENT || level == FORCED) {
+            Triple(alertDeliveries, URGENT_WINDOW_MS, URGENT_LIMIT)
         } else {
             Triple(normalDeliveries, NORMAL_WINDOW_MS, NORMAL_LIMIT)
         }
@@ -174,6 +230,9 @@ class NotifyStore(
     companion object {
         const val NORMAL = "normal"
         const val URGENT = "urgent"
+        const val RING = "ring"
+        const val FORCED = "forced"
+        const val TIMEOUT = "timeout"
         const val MAX_TITLE_CHARS = 100
         const val MAX_TEXT_CHARS = 1000
         const val NORMAL_LIMIT = 10
@@ -182,8 +241,9 @@ class NotifyStore(
         const val URGENT_WINDOW_MS = 10 * 60_000L
         private const val DEFAULT_TITLE = "Tentacle"
         private const val MAX_ENTRIES = 50
-        private val LEVELS = setOf(NORMAL, URGENT)
-        private val TERMINAL_STATES = setOf("acknowledged", "dismissed", "expired")
+        private val LEVELS = setOf(NORMAL, URGENT, RING, FORCED)
+        private val DELIVERED_LEVELS = setOf(NORMAL, URGENT, FORCED)
+        private val TERMINAL_STATES = setOf("acknowledged", "dismissed", "expired", TIMEOUT)
         private val ID = Regex("[A-Za-z0-9_-]{1,64}")
     }
 }

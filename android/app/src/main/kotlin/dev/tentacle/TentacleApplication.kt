@@ -6,6 +6,7 @@ class TentacleApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         AppLog.initialize(this)
+        dev.tentacle.notify.PhoneNotifications.recoverSavedVolume(this)
         RequestStores.get(this)
         dev.tentacle.codes.CodeStores.get(this)
         dev.tentacle.notify.PhoneNotifications.get(this)

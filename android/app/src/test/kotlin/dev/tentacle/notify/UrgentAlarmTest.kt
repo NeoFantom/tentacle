@@ -18,20 +18,34 @@ class UrgentAlarmTest {
 
     @Test fun `urgent delivery uses app alarm with and without full screen access`() {
         for (fullScreen in listOf(true, false)) {
-            val decision = NotifyPolicy.decide("urgent", NotifyPermissions(true, true, true, true, fullScreen))
+            val decision = NotifyPolicy.decide("urgent", NotifyPermissions(true, true, true, true, true, fullScreen))
             assertTrue(decision.shown)
             assertTrue(NotifyPolicy.usesAppAlarm(decision.level, quiet = false))
             assertFalse(NotifyPolicy.usesAppAlarm(decision.level, quiet = true))
         }
-        val downgraded = NotifyPolicy.decide("urgent", NotifyPermissions(false, true, true, true, false))
+        val downgraded = NotifyPolicy.decide("urgent", NotifyPermissions(false, true, true, true, true, false))
         assertFalse(NotifyPolicy.usesAppAlarm(downgraded.level, quiet = false))
         assertFalse(NotifyPolicy.usesAppAlarm("normal", quiet = false))
     }
 
+    @Test fun `forced alarm volume rounds up and respects the stream minimum`() {
+        assertEquals(15, AlarmVolume.targetIndex(15, 1, 100))
+        assertEquals(11, AlarmVolume.targetIndex(15, 1, 70))
+        assertEquals(2, AlarmVolume.targetIndex(15, 1, 10))
+        assertEquals(3, AlarmVolume.targetIndex(15, 3, 10))
+    }
+
     @Test fun `only alarm stream volume gates audio regardless of ringer mode`() {
-        assertFalse(UrgentAlarm.shouldPlaySound(0))
-        assertTrue(UrgentAlarm.shouldPlaySound(1))
-        assertTrue(UrgentAlarm.shouldPlaySound(7))
+        assertFalse(UrgentAlarm.shouldPlaySound("both", 0))
+        assertTrue(UrgentAlarm.shouldPlaySound("both", 1))
+        assertTrue(UrgentAlarm.shouldPlaySound("sound", 7))
+        assertFalse(UrgentAlarm.shouldPlaySound("vibrate", 7))
+        assertTrue(UrgentAlarm.shouldVibrate("both"))
+        assertTrue(UrgentAlarm.shouldVibrate("vibrate"))
+        assertFalse(UrgentAlarm.shouldVibrate("sound"))
+        assertFalse(UrgentAlarm.shouldVibrate("both", forcedActive = true))
+        assertFalse(UrgentAlarm.mayCancelVibrator(forcedActive = true))
+        assertTrue(UrgentAlarm.mayCancelVibrator(forcedActive = false))
     }
 
     @Test fun `default alarm sound wins without evaluating fallbacks`() {

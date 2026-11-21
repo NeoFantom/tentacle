@@ -99,7 +99,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._at_request_boundary(self._dispatch_post)
 
     def do_PUT(self) -> None:
-        self._at_request_boundary(self._method_not_allowed)
+        self._at_request_boundary(self._dispatch_put)
 
     do_PATCH = do_PUT
     do_DELETE = do_PUT
@@ -152,6 +152,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._codes(query)
             elif parsed.path == "/v1/notifications":
                 self._phone_notifications(query)
+            elif parsed.path == "/v1/notify/questions":
+                self._notify_questions()
             elif re.fullmatch(r"/v1/notify/[A-Za-z0-9_-]{1,64}", parsed.path):
                 self._notification(parsed.path.split("/")[-1], query)
             elif re.fullmatch(r"/v1/requests/[A-Za-z0-9_-]{1,64}/log", parsed.path):
@@ -164,6 +166,17 @@ class _Handler(BaseHTTPRequestHandler):
             raise
         except (OSError, ValueError) as exc:
             self._send_error(500, "internal", str(exc) or "Internal server error")
+
+    def _dispatch_put(self) -> None:
+        try:
+            if not self._authorized():
+                raise _ApiError(401, "unauthorized", "Invalid bearer token")
+            parsed = urlsplit(self.path)
+            if parsed.path != "/v1/notify/questions":
+                raise _ApiError(405, "method_not_allowed", "Method not allowed")
+            self._put_notify_questions()
+        except _ApiError as exc:
+            self._send_error(exc.status, exc.code, exc.message)
 
     def _dispatch_post(self) -> None:
         try:
@@ -548,8 +561,10 @@ class _Handler(BaseHTTPRequestHandler):
                 or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", notification_id) is None
                 or not isinstance(text, str) or not 1 <= len(text) <= 1000
                 or (title is not None and (not isinstance(title, str) or len(title) > 100))
-                or level not in {"normal", "urgent"}):
+                or level not in {"normal", "urgent", "forced"}):
             raise _ApiError(400, "bad_request", "Invalid notification")
+        if level == "forced" and not self.server.notify_options["forced_supported"]:
+            raise _ApiError(400, "bad_request", "Invalid notification level")
         with self.server.notify_condition:
             existing = self.server.notifications.get(notification_id)
             canonical = {"id": notification_id, "text": text, "title": title, "level": level}
@@ -570,6 +585,12 @@ class _Handler(BaseHTTPRequestHandler):
                     reason = "urgent_not_allowed"
                 elif level == "urgent" and not self.server.notify_options["full_screen_allowed"]:
                     reason = "full_screen_not_allowed"
+                elif level == "forced" and not self.server.notify_options["forced_allowed"]:
+                    actual_level = "urgent" if self.server.notify_options["urgent_allowed"] else "normal"
+                    downgraded = True
+                    reason = "forced_not_allowed"
+                elif level == "forced" and not self.server.notify_options["full_screen_allowed"]:
+                    reason = "full_screen_not_allowed"
                 if not shown:
                     reason = str(self.server.notify_options["not_shown_reason"])
                 reply = {
@@ -584,6 +605,35 @@ class _Handler(BaseHTTPRequestHandler):
                 }
                 self.server.notify_requests.append(dict(body))
         self._send_json(200, reply)
+
+    def _notify_questions(self) -> None:
+        if not self.server.notify_options["questions_supported"]:
+            raise _ApiError(404, "not_found", "Endpoint not found")
+        questions = self.server.notify_options["questions"]
+        counts = {lang: sum(item["lang"] == lang for item in questions) for lang in ("en", "zh")}
+        source = "computer" if questions else "bundled"
+        if source == "bundled":
+            counts = {"en": 45, "zh": 45}
+        reply = {"source": source, "count": sum(counts.values()), "counts": counts}
+        if source == "computer":
+            reply["updated_ms"] = self.server.notify_options["questions_updated_ms"]
+        self._send_json(200, reply)
+
+    def _put_notify_questions(self) -> None:
+        if not self.server.notify_options["questions_supported"]:
+            raise _ApiError(405, "method_not_allowed", "Method not allowed")
+        raw_length = self.headers.get("Content-Length", "")
+        if not raw_length.isdigit() or int(raw_length) > 64 * 1024:
+            raise _ApiError(400, "bad_request", "Invalid question body")
+        try:
+            body = json.loads(self.rfile.read(int(raw_length)).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise _ApiError(400, "bad_request", "Invalid question body") from None
+        if not isinstance(body, dict) or set(body) != {"questions"} or not isinstance(body["questions"], list):
+            raise _ApiError(400, "bad_request", "Invalid question body")
+        self.server.notify_options["questions"] = body["questions"]
+        self.server.notify_options["questions_updated_ms"] = time.time_ns() // 1_000_000
+        self._notify_questions()
 
     def _update_request(self, request_id: str) -> None:
         raw_length = self.headers.get("Content-Length", "")
@@ -747,6 +797,9 @@ class FakePhone:
         codes_enabled: bool = True,
         notify_urgent_allowed: bool = False,
         notify_full_screen_allowed: bool = True,
+        notify_forced_allowed: bool = False,
+        notify_forced_supported: bool = True,
+        notify_questions_supported: bool = True,
         notify_shown: bool = True,
         notify_not_shown_reason: str = "notifications_disabled",
         request_features: dict[str, bool] | None = None,
@@ -790,6 +843,11 @@ class FakePhone:
         self.notify_options: dict[str, object] = {
             "urgent_allowed": notify_urgent_allowed,
             "full_screen_allowed": notify_full_screen_allowed,
+            "forced_allowed": notify_forced_allowed,
+            "forced_supported": notify_forced_supported,
+            "questions_supported": notify_questions_supported,
+            "questions": [],
+            "questions_updated_ms": 0,
             "shown": notify_shown,
             "not_shown_reason": notify_not_shown_reason,
             "rate_limited": False,
@@ -922,7 +980,7 @@ class FakePhone:
         self.notify_options["rate_limited"] = limited
 
     def set_notification_state(self, notification_id: str, state: str) -> None:
-        if state not in {"shown", "acknowledged", "dismissed", "expired"}:
+        if state not in {"shown", "acknowledged", "dismissed", "expired", "timeout"}:
             raise ValueError("invalid notification state")
         with self._notify_condition:
             item = self._notifications.get(notification_id)

@@ -20,8 +20,8 @@ Android phone ← token-protected HTTP → tentacle CLI → local tools and agen
   with app notifications as an optional extra source.
 - `notifications` reads the owner-enabled phone notification feed; `gui` opens
   the same feed in a private loopback web view.
-- `notify` sends a normal phone notification, or an urgent alert when the owner
-  has explicitly allowed and requested one.
+- `notify` sends a **Normal alert**, **Ring alert**, or **Forced alert**. Ring
+  requires an event-specific request; forced requires an explicit wake-up request.
 - The Python ≥ 3.11 core uses only the standard library. The Android app uses
   Kotlin with no third-party runtime dependencies.
 
@@ -106,7 +106,10 @@ tentacle transcribe PHONE_PATH_OR_LOCAL_FILE [--json] [--force] [-o PREFIX]
 tentacle code [--wait 120] [--from TEXT] [--since now|30s|2m] [--json]
 tentacle notifications [--since 10m|ISO] [--app NAME-or-package] [--grep TEXT] [--follow] [--json] [--limit N]
 tentacle gui [--port N] [--no-open]
-tentacle notify TEXT [--title T] [--urgent] [--wait-ack [SECONDS]] [--json]
+tentacle notify TEXT [--title T] [--level normal|ring|forced] [--urgent] [--wait-ack [SECONDS]] [--json]
+tentacle notify questions [show|clear]
+tentacle notify questions push FILE
+tentacle notify questions generate [--count N] [--out FILE] [--no-push]
 tentacle doctor
 ```
 
@@ -187,30 +190,29 @@ retention and privacy contract.
 
 ## Notifications from the computer
 
-Use `tentacle notify 'The task finished'` to send a normal notification to the
-phone owner. Normal is the non-alarm default; the phone's standard notification
-channel controls its sound and vibration. Add `--title T` for a short heading.
-If notifications are disabled or a channel is blocked, the command reports
-that the message was not shown.
+Use `tentacle notify 'The task finished'` for a **Normal alert**. Add
+`--level ring` for a **Ring alert** only when the owner asked to be alerted for
+that event. Add `--level forced` for a **Forced alert** only when the owner
+explicitly asked to be woken or forced for that event. The phone's **Settings →
+Alerts** has separate off-by-default switches for ring and forced. Ring offers
+sound/vibration choices and stops after acknowledgement or two minutes. Forced
+sets the chosen alarm volume, requires a correct general-knowledge answer to
+acknowledge, and stops sound at its configurable 5–30 minute cap. The previous
+alarm volume is restored on stop and after crash recovery. Android DND/device
+policy can still silence alarms.
 
-`--urgent` requests a continuously ringing and vibrating alarm-style alert.
-The app setting **Allow urgent alerts** is off by default; without it, the phone
-delivers the message as a normal notification and the command says it was
-downgraded. Use `--urgent` only when the owner explicitly asked to be woken or
-alerted for that particular event. Android may also require full-screen alert
-access; without it, the phone still posts a high-priority urgent notification
-and the command reports the limitation.
+`--urgent` remains a ring alias. Unavailable levels are downgraded and the
+command reports the delivered level; old phones rejecting forced are retried
+as ring. `--wait-ack [SECONDS]` defaults to 300 seconds; acknowledgement and
+dismissal exit 0, while a forced sound-cap `timeout` exits 1. `--json` prints
+delivery and, when waiting, the terminal state as JSON Lines.
 
-`--wait-ack` waits up to five minutes for the owner to tap or dismiss the
-notification; supply seconds to choose another timeout. Use it when the next
-step requires knowing the owner saw the message. Agents may notify after a long
-task finishes, when they need a decision, or when blocked and the owner is
-unlikely to be watching the computer. Keep messages short and do not spam; the
-phone enforces separate normal and urgent rate limits. The complete API and
-permission behavior is in [Notifications from the computer](docs/NOTIFY.md).
-With `--json`, a command without acknowledgement waiting prints one delivery
-object; `--json --wait-ack` prints JSON Lines with delivery first and the
-terminal acknowledgement or dismissal when received.
+`tentacle notify questions` shows the question source/count. Use `push FILE`
+for a custom English/Chinese JSON bank or `clear` for built-in questions.
+`generate` uses `[notify] question_command`, accepts `--count`, `--out` and
+`--no-push`, and validates model output before upload. The single word
+`questions` is reserved as notification text. See [Alerts](docs/NOTIFY.md)
+for settings, compatibility, question schema and the alarm stream rationale.
 
 ## Requests from the app
 
@@ -331,7 +333,7 @@ Lookup: `--config PATH`, then `TENTACLE_CONFIG`, then
 `$XDG_CONFIG_HOME/tentacle/config.toml` (default
 `~/.config/tentacle/config.toml`). See the commented
 [config template](pc/src/tentacle/config.example.toml). Settings cover
-`[phone]`, `[storage]`, `[[sources]]`, `[calls]`, `[asr]` and `[requests]`.
+`[phone]`, `[storage]`, `[[sources]]`, `[calls]`, `[asr]`, `[notify]` and `[requests]`.
 Tokens can be supplied inline,
 from a file or via an environment variable. `config show` masks the token.
 `TENTACLE_ASR_VERBOSE=1` enables verbose ASR output.

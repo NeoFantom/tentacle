@@ -4,6 +4,8 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import shlex
+import sys
 import tempfile
 import threading
 import time
@@ -51,8 +53,29 @@ class NotifyTests(unittest.TestCase):
     def test_urgent_is_downgraded_when_owner_did_not_allow_it(self) -> None:
         self.assertEqual(
             self.run_cli("Wake up", "--urgent"),
-            (0, "delivered (urgent alerts are off in the app, sent as a normal notification)\n", ""),
+            (0, "delivered (ring alerts are off in the app, sent as a normal alert)\n", ""),
         )
+        self.assertEqual(self.phone.notify_requests[-1]["level"], "urgent")
+
+    def test_levels_forced_downgrade_and_old_phone_fallback(self) -> None:
+        self.phone.notify_options["urgent_allowed"] = True
+        self.assertEqual(
+            self.run_cli("Wake up", "--level", "ring"),
+            (0, "delivered\n", ""),
+        )
+        self.assertEqual(self.phone.notify_requests[-1]["level"], "urgent")
+
+        self.assertEqual(
+            self.run_cli("Answer me", "--level", "forced"),
+            (0, "delivered (forced alerts are off in the app, sent as a ring alert)\n", ""),
+        )
+        self.phone.notify_options["forced_supported"] = False
+        code, output, error = self.run_cli("Old phone", "--level", "forced", "--json")
+        self.assertEqual((code, error), (0, ""))
+        reply = json.loads(output)
+        self.assertEqual(reply["fallback"], "urgent")
+        self.assertEqual(reply["level"], "urgent")
+        self.assertEqual(self.phone.notify_requests[-1]["level"], "urgent")
 
     def test_full_screen_fallback_has_exact_delivery_message(self) -> None:
         self.phone.notify_options["urgent_allowed"] = True
@@ -114,6 +137,40 @@ class NotifyTests(unittest.TestCase):
         self.assertTrue(lines[0]["shown"])
         self.assertEqual(lines[1]["state"], "dismissed")
         self.assertEqual(lines[0]["id"], lines[1]["id"])
+
+    def test_forced_timeout_is_reported(self) -> None:
+        self.phone.notify_options["forced_allowed"] = True
+
+        def time_out() -> None:
+            while not self.phone.notify_requests:
+                time.sleep(0.01)
+            self.phone.set_notification_state(str(self.phone.notify_requests[-1]["id"]), "timeout")
+
+        thread = threading.Thread(target=time_out)
+        thread.start()
+        result = self.run_cli("Wake me", "--level", "forced", "--wait-ack", "2")
+        thread.join(timeout=1)
+        self.assertEqual(result, (
+            1, "delivered\n", "forced alert stopped after its time limit without an answer\n",
+        ))
+
+        class TimedOutClient:
+            def send_notification(self, *_args, **kwargs):
+                return {"id": kwargs["notification_id"], "level": "forced",
+                        "downgraded": False, "shown": True}
+
+            def notification(self, notification_id, wait=0):
+                return {"id": notification_id, "level": "forced", "state": "timeout"}
+
+        with mock.patch.object(notify_cmd, "PhoneClient", return_value=TimedOutClient()):
+            code, output, error = self.run_cli(
+                "Wake me", "--level", "forced", "--wait-ack", "2", "--json",
+            )
+        lines = [json.loads(line) for line in output.splitlines()]
+        self.assertEqual((code, error), (
+            1, "forced alert stopped after its time limit without an answer\n",
+        ))
+        self.assertEqual([item.get("state") for item in lines], [None, "timeout"])
 
     def test_positive_timeout_uses_a_long_poll_without_large_overshoot(self) -> None:
         started = time.monotonic()
@@ -198,6 +255,29 @@ class NotifyTests(unittest.TestCase):
         self.assertEqual(lost_response.ids[0], lost_response.ids[1])
         self.assertEqual(len(self.phone.notify_requests), 1)
 
+    def test_forced_fallback_handles_transport_retry_then_old_phone_response(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        class Client:
+            def send_notification(self, _text, *, notification_id, title, level):
+                calls.append((notification_id, level))
+                if len(calls) == 1:
+                    raise PhoneError("unreachable", "lost", None)
+                if level == "forced":
+                    raise PhoneError("bad_request", "unsupported", 400)
+                return {"id": notification_id, "level": "normal", "downgraded": True,
+                        "shown": True, "reason": "urgent_not_allowed"}
+
+        result = notify_cmd._post_with_retry(
+            Client(), text="Wake", title=None, level="forced", notification_id="same",
+        )
+        self.assertEqual(calls, [("same", "forced"), ("same", "forced"), ("same", "urgent")])
+        self.assertEqual(result["fallback"], "urgent")
+        self.assertEqual(
+            notify_cmd._delivery_message(result),
+            "phone app does not support forced alerts; ring alerts are off in the app, sent as a normal alert",
+        )
+
     def test_wait_is_chunked_and_bare_option_defaults_to_300_seconds(self) -> None:
         parser = cli.build_parser()
         parsed = parser.parse_args(["notify", "Text", "--wait-ack"])
@@ -215,11 +295,104 @@ class NotifyTests(unittest.TestCase):
                 return {"id": "n-1", "level": "normal", "state": "dismissed"}
 
         client = Client()
-        args = mock.Mock(text="Text", title=None, urgent=False, wait_ack=120, json=False)
+        args = mock.Mock(text="Text", question_args=[], title=None, level=None, urgent=False,
+                         wait_ack=120, json=False, count=30, out=None, no_push=False)
         with mock.patch.object(notify_cmd, "PhoneClient", return_value=client), \
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(notify_cmd._run(args, mock.Mock()), 0)
         self.assertEqual(client.waits, [55])
+
+    def test_questions_show_push_clear_and_old_phone(self) -> None:
+        self.assertEqual(
+            self.run_cli("questions"),
+            (0, "Questions: 90 from built-in (English: 45, Chinese: 45)\n", ""),
+        )
+        question_file = self.root / "questions.json"
+        question_file.write_text(json.dumps([
+            {"lang": "en", "q": "12 × 3 = ?", "answers": ["36"], "domain": "math"},
+            {"lang": "zh", "q": "水的化学式是什么？", "answers": ["H2O"], "domain": "chemistry"},
+        ], ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(
+            self.run_cli("questions", "push", str(question_file)),
+            (0, "Questions: 2 from your computer (English: 1, Chinese: 1)\n", ""),
+        )
+        self.assertEqual(
+            self.run_cli("questions", "clear"),
+            (0, "Questions: 90 from built-in (English: 45, Chinese: 45)\n", ""),
+        )
+        self.phone.notify_options["questions_supported"] = False
+        self.assertEqual(
+            self.run_cli("questions", "show"),
+            (1, "", "the phone app is too old for custom questions\n"),
+        )
+
+    def test_question_generate_extracts_json_drops_invalid_and_can_skip_push(self) -> None:
+        questions = []
+        for lang in ("en", "zh"):
+            for index in range(10):
+                questions.append({
+                    "lang": lang, "q": f"{lang} prompt {index}",
+                    "answers": [str(index)], "domain": "math",
+                })
+        questions += [questions[0], {"lang": "xx", "q": "bad", "answers": ["bad"]}]
+        script = self.root / "generator.py"
+        script.write_text(
+            "import json,sys\nsys.stdin.read()\nprint('prose before')\n"
+            f"print('```json')\nprint(json.dumps({json.dumps({'questions': questions})}))\n"
+            "print('``` prose after')\n",
+            encoding="utf-8",
+        )
+        generated = self.root / "generated.json"
+        self.config.write_text(
+            self.config.read_text(encoding="utf-8") +
+            f'\n[notify]\nquestion_command = {json.dumps(shlex.join([sys.executable, str(script)]))}\n',
+            encoding="utf-8",
+        )
+        code, output, error = self.run_cli(
+            "questions", "generate", "--count", "10", "--out", str(generated), "--no-push",
+        )
+        self.assertEqual((code, error), (0, ""))
+        self.assertIn("Generated 20 questions", output)
+        self.assertEqual(len(json.loads(generated.read_text())["questions"]), 20)
+
+    def test_question_generate_rejects_invalid_output_and_missing_command(self) -> None:
+        self.assertEqual(self.run_cli("questions", "generate", "--no-push"), (
+            2, "", "usage/config error: no [notify] question_command is configured; "
+            "set it to an AI CLI command\n",
+        ))
+        script = self.root / "invalid.py"
+        script.write_text("print('not json')\n", encoding="utf-8")
+        self.config.write_text(
+            self.config.read_text(encoding="utf-8") +
+            f'\n[notify]\nquestion_command = {json.dumps(shlex.join([sys.executable, str(script)]))}\n',
+            encoding="utf-8",
+        )
+        code, output, error = self.run_cli("questions", "generate", "--no-push")
+        self.assertEqual((code, output), (1, ""))
+        self.assertIn("did not contain a JSON", error)
+
+    def test_question_validation_drops_untrusted_types_and_checks_wire_size(self) -> None:
+        invalid = [
+            {"lang": [], "q": "bad", "answers": ["answer"]},
+            {"lang": "en", "q": "bad", "answers": ["answer"], "domain": []},
+            {"lang": "en", "q": "bad", "answers": ["answer"], "domain": None},
+        ]
+        self.assertEqual(notify_cmd._validated_questions(invalid, drop_invalid=True), [])
+
+        client = PhoneClient(PhoneConfig(
+            url=self.phone.url, token="test-token", timeout_s=2,
+        ))
+        with mock.patch.object(client, "_json", return_value={
+            "source": [], "count": 0, "counts": {"en": 0, "zh": 0},
+        }):
+            with self.assertRaises(PhoneError):
+                client.notify_questions()
+        oversized = [
+            {"lang": "zh", "q": "问" * 200 + str(index), "answers": ["答" * 60]}
+            for index in range(150)
+        ]
+        with self.assertRaisesRegex(ValueError, "64 KiB"):
+            client.put_notify_questions(oversized)
 
 
 if __name__ == "__main__":

@@ -17,10 +17,13 @@ class ConfigTests(unittest.TestCase):
             "storage": {"data_dir": "/data"},
             "calls": {"timezone": "Asia/Shanghai"},
             "asr": {"backend": "none"},
+            "notify": {"question_command": "ai-cli run", "question_timeout_s": 12},
             "sources": [{"name": "calls", "path": "Recordings"}],
         })
         self.assertEqual(cfg.phone.find_timeout_s, 30)
         self.assertEqual(cfg.calls.timezone, "Asia/Shanghai")
+        self.assertEqual(cfg.notify.question_argv, ["ai-cli", "run"])
+        self.assertEqual(cfg.notify.question_timeout_s, 12)
         self.assertEqual(cfg.sources[0].path, "Recordings")
         with self.assertRaisesRegex(config.ConfigError, "unknown section"):
             config.from_dict({"sync": {}})
@@ -52,8 +55,19 @@ class ConfigTests(unittest.TestCase):
         self.assertIsInstance(cfg.calls, config.CallsConfig)
         self.assertIn("[calls]", text)
         self.assertIn("find_timeout_s = 120", text)
-        for section in ("sync", "agent", "analyze", "projects", "tasks", "pipeline", "notify"):
+        self.assertIn("[notify]", text)
+        for section in ("sync", "agent", "analyze", "projects", "tasks", "pipeline"):
             self.assertNotIn(f"[{section}]", text)
+
+    def test_notify_config_validation(self):
+        for values in (
+            {"question_command": []},
+            {"question_command": "unterminated '"},
+            {"question_timeout_s": 0},
+            {"question_timeout_s": True},
+        ):
+            with self.subTest(values=values), self.assertRaises(config.ConfigError):
+                config.from_dict({"notify": values})
 
 
 if __name__ == "__main__":

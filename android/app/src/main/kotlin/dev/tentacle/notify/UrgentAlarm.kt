@@ -16,8 +16,18 @@ internal object UrgentChannel {
 
 internal object UrgentAlarm {
     // Ringer mode is deliberately irrelevant: only the alarm stream volume controls alarm audio.
-    fun shouldPlaySound(alarmVolume: Int): Boolean = alarmVolume > 0
+    fun shouldPlaySound(style: String, alarmVolume: Int): Boolean = style != "vibrate" && alarmVolume > 0
+    fun shouldVibrate(style: String, forcedActive: Boolean = false): Boolean = style != "sound" && !forcedActive
+    fun mayCancelVibrator(forcedActive: Boolean): Boolean = !forcedActive
 
     fun <T> sound(alarm: () -> T?, notification: () -> T?, ringtone: () -> T?): T? =
         alarm() ?: notification() ?: ringtone()
+}
+
+internal object AlarmVolume {
+    fun targetIndex(maximum: Int, minimum: Int, percent: Int): Int {
+        require(maximum >= 0 && minimum in 0..maximum)
+        require(percent in 10..100)
+        return maxOf(minimum, (maximum * percent + 99) / 100)
+    }
 }

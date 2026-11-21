@@ -5,13 +5,23 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class NotifyPolicyTest {
-    private val allowed = NotifyPermissions(true, true, true, true, true)
+    private val allowed = NotifyPermissions(true, true, true, true, true, true)
 
     @Test fun `urgent requires owner opt in and downgrade uses normal channel permissions`() {
         val result = NotifyPolicy.decide("urgent", allowed.copy(urgentAllowed = false, urgentChannelAllowed = false))
         assertEquals(NotifyDecision("normal", true, true, "urgent_not_allowed"), result)
         assertEquals("channel_blocked", NotifyPolicy.decide("urgent",
             allowed.copy(urgentAllowed = false, normalChannelAllowed = false)).reason)
+    }
+
+    @Test fun `forced has its own opt in and downgrades through ring to normal`() {
+        assertEquals(NotifyDecision("forced", false, true), NotifyPolicy.decide("forced", allowed))
+        assertEquals(NotifyDecision("urgent", true, true, "forced_not_allowed"),
+            NotifyPolicy.decide("forced", allowed.copy(forcedAllowed = false)))
+        assertEquals(NotifyDecision("normal", true, true, "forced_not_allowed"),
+            NotifyPolicy.decide("forced", allowed.copy(forcedAllowed = false, urgentAllowed = false)))
+        assertEquals(NotifyDecision("forced", false, true, "full_screen_not_allowed"),
+            NotifyPolicy.decide("forced", allowed.copy(fullScreenAllowed = false)))
     }
 
     @Test fun `full screen denial keeps urgent level and notification permission denial prevents delivery`() {

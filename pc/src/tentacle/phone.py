@@ -336,7 +336,7 @@ class PhoneClient:
         *,
         notification_id: str,
         title: str | None = None,
-        urgent: bool = False,
+        level: str = "normal",
     ) -> dict[str, Any]:
         """Ask the phone to show a notification.
 
@@ -345,7 +345,7 @@ class PhoneClient:
         """
         body: dict[str, Any] = {
             "text": text,
-            "level": "urgent" if urgent else "normal",
+            "level": level,
             "id": notification_id,
         }
         if title is not None:
@@ -354,7 +354,7 @@ class PhoneClient:
         required = {"id": str, "level": str, "downgraded": bool, "shown": bool}
         if (any(type(payload.get(name)) is not expected for name, expected in required.items())
                 or payload["id"] != notification_id
-                or payload["level"] not in {"normal", "urgent"}
+                or payload["level"] not in {"normal", "urgent", "forced"}
                 or ("reason" in payload and type(payload["reason"]) is not str)):
             raise PhoneError("bad_response", "phone returned an invalid notify response", None)
         return payload
@@ -371,11 +371,39 @@ class PhoneClient:
         required = {"id": str, "level": str, "state": str}
         if (any(type(payload.get(name)) is not expected for name, expected in required.items())
                 or payload["id"] != notification_id
-                or payload["level"] not in {"normal", "urgent"}
-                or payload["state"] not in {"shown", "acknowledged", "dismissed", "expired"}
+                or payload["level"] not in {"normal", "urgent", "forced"}
+                or payload["state"] not in {"shown", "acknowledged", "dismissed", "expired", "timeout"}
                 or ("acknowledged_ms" in payload
                     and type(payload["acknowledged_ms"]) is not int)):
             raise PhoneError("bad_response", "phone returned an invalid notification response", None)
+        return payload
+
+    def notify_questions(self) -> dict[str, Any]:
+        """Return the phone's active alert-question source summary."""
+        return self._validate_question_summary(self._json("notify/questions"))
+
+    def put_notify_questions(self, questions: list[dict[str, Any]]) -> dict[str, Any]:
+        """Replace computer-supplied alert questions; an empty list clears them."""
+        encoded = json.dumps(
+            {"questions": questions}, ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")
+        if len(encoded) > 64 * 1024:
+            raise ValueError("question data exceeds the phone's 64 KiB limit")
+        payload = self._json("notify/questions", method="PUT", body={"questions": questions})
+        return self._validate_question_summary(payload)
+
+    @staticmethod
+    def _validate_question_summary(payload: dict[str, Any]) -> dict[str, Any]:
+        counts = payload.get("counts")
+        source = payload.get("source")
+        if (not isinstance(source, str) or source not in {"computer", "bundled"}
+                or type(payload.get("count")) is not int
+                or not isinstance(counts, dict)
+                or type(counts.get("en")) is not int
+                or type(counts.get("zh")) is not int
+                or payload["count"] != counts["en"] + counts["zh"]
+                or ("updated_ms" in payload and type(payload["updated_ms"]) is not int)):
+            raise PhoneError("bad_response", "phone returned an invalid question summary", None)
         return payload
 
     def update_request(self, request_id: str, status: str, message: str) -> dict[str, Any]:

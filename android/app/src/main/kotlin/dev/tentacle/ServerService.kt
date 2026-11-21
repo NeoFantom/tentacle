@@ -90,6 +90,7 @@ class ServerService : Service() {
                     codeStore = dev.tentacle.codes.CodeStores.get(this),
                     phoneNotificationStoreProvider = { dev.tentacle.feed.PhoneNotificationStores.get(this) },
                     notifyStore = dev.tentacle.notify.PhoneNotifications.get(this),
+                    questionStore = dev.tentacle.notify.PhoneNotifications.questions(this),
                     info = {
                         PingInfo(
                             version = BuildConfig.VERSION_NAME,

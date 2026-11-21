@@ -72,23 +72,49 @@ tentacle notify 'Short message for the owner'
 ```
 
 Keep the title and text short and send one useful update rather than repeated
-progress messages. The phone rate-limits both normal and urgent notifications.
-If the command reports `not shown`, relay the reason in the current output when
-the owner next sees it; do not retry repeatedly.
+progress messages. **Normal alert** is the default; **Ring alert** and **Forced
+alert** share a stricter rate limit. If delivery says `not shown`, report the
+reason when the owner next sees the current output; do not retry repeatedly.
 
-Use `--urgent` only when the owner explicitly asked to be woken or alerted for
-this particular event. General permission in the app is necessary but does not
-replace that event-specific request. If urgent alerts are off, Tentacle sends a
-normal notification and reports the downgrade. If full-screen alerts are not
-allowed, it still sends a high-priority notification and reports that limit.
+Use `--level ring` only when the owner asked to be alerted for this particular
+event. Use `--level forced` only when the owner explicitly asked to be woken or
+forced for this particular event. General phone opt-in does not replace that
+event-specific request. The app calls these 普通提醒 / 响铃提醒 / 强制提醒 in
+Chinese. The legacy `--urgent` flag aliases ring; its wire value stays `urgent`.
+
+Ring has a two-minute sound cap and an Acknowledge action. Forced temporarily
+sets alarm volume, keeps ringing until a correct general-knowledge answer or
+its configured sound cap, and cannot be acknowledged by a notification tap.
+Forced and ring have independent opt-ins. If forced is off, delivery falls
+back to ring when allowed, otherwise normal; ring off falls back to normal.
+An old phone rejecting forced is retried as ring and the command reports it.
+Read the delivered level/reason before assuming the requested strength worked.
 
 Use `--wait-ack` only when work cannot safely continue until the owner has seen
-the message. It waits 300 seconds by default; provide seconds to choose another
-timeout. Acknowledged and dismissed both confirm that the owner handled the
-notification. A timeout exits 1 and should be reported as no response, not
-treated as approval. Without `--wait-ack`, `--json` prints one delivery object;
-with both options, it prints JSON Lines containing delivery and then the
-terminal response when received.
+the message. It defaults to 300 seconds; supply seconds for another deadline.
+Acknowledged and dismissed confirm handling. Forced `timeout` means its sound
+cap ended without a correct answer and exits 1. No response or timeout is never
+approval. Without waiting, `--json` prints one delivery object; with waiting it
+prints JSON Lines containing delivery then the terminal response.
+
+When asked to manage the question bank:
+
+```text
+tentacle notify questions [show]
+tentacle notify questions push FILE
+tentacle notify questions clear
+tentacle notify questions generate [--count N] [--out FILE] [--no-push]
+```
+
+Generate uses the explicitly configured `[notify] question_command`, with no
+default, to request English/Chinese high-school general-knowledge questions.
+It validates and deduplicates the JSON and requires ten valid questions in
+each language before pushing. `--no-push` keeps output local. Push accepts the
+question object or a bare list; clear restores built-in questions. A language
+missing from a custom set uses its built-in bank. Old phones report that the
+app is too old for custom questions. A notification whose entire text is the
+single word `questions` is reserved for these commands. Full contracts:
+[Alerts](../../docs/NOTIFY.md).
 
 ## Verification codes
 

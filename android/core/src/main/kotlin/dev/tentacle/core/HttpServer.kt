@@ -34,6 +34,7 @@ class HttpServer(
     private val notifyStore: NotifyStore? = null,
     private val phoneNotificationStore: PhoneNotificationStore? = null,
     private val phoneNotificationStoreProvider: (() -> PhoneNotificationStore)? = null,
+    private val questionStore: AlertQuestionStore? = null,
 ) {
     @Volatile var logger: (String) -> Unit = {}
     @Volatile var accessLogger: (String, String, Int, Long, Long) -> Unit = { _, _, _, _, _ -> }
@@ -140,13 +141,16 @@ class HttpServer(
                 authenticate(request.headers["authorization"])
                 val updateId = REQUEST_UPDATE.matchEntire(route)?.groupValues?.get(1)
                 val logId = REQUEST_LOG.matchEntire(route)?.groupValues?.get(1)
-                val notifyId = NOTIFY_ITEM.matchEntire(route)?.groupValues?.get(1)
+                val questionsRoute = route == "/v1/notify/questions"
+                val notifyId = if (questionsRoute) null else NOTIFY_ITEM.matchEntire(route)?.groupValues?.get(1)
                 if (request.method != "GET" && !(head && route == "/v1/file") &&
-                    !(request.method == "POST" && (updateId != null || route == "/v1/notify"))) {
+                    !(request.method == "POST" && (updateId != null || route == "/v1/notify")) &&
+                    !(request.method == "PUT" && questionsRoute)) {
                     throw ApiException(405, "method_not_allowed", "Method is not allowed", mapOf(
                         "Allow" to when {
                             route == "/v1/file" -> "GET, HEAD"
                             updateId != null || route == "/v1/notify" -> "POST"
+                            questionsRoute -> "GET, PUT"
                             else -> "GET"
                         },
                     ))
@@ -154,13 +158,22 @@ class HttpServer(
                 if (route == "/v1/notify" && request.method != "POST") {
                     throw ApiException(405, "method_not_allowed", "Method is not allowed", mapOf("Allow" to "POST"))
                 }
-                if ((route !in setOf("/v1/ping", "/v1/ls", "/v1/stat", "/v1/find", "/v1/file", "/v1/requests", "/v1/codes", "/v1/notifications", "/v1/notify") &&
+                if ((route !in setOf("/v1/ping", "/v1/ls", "/v1/stat", "/v1/find", "/v1/file", "/v1/requests", "/v1/codes", "/v1/notifications", "/v1/notify", "/v1/notify/questions") &&
                     updateId == null && logId == null && notifyId == null) ||
                     (updateId != null && request.method != "POST")) {
                     throw ApiException(404, "not_found")
                 }
                 val query = parseQuery(request.target.substringAfter('?', ""))
-                if (route == "/v1/notify" || notifyId != null) {
+                if (questionsRoute) {
+                    val store = questionStore ?: throw ApiException(404, "not_found")
+                    val result = if (request.method == "PUT") {
+                        store.replaceFromJson(readJsonBody(input, request.headers, AlertQuestionStore.MAX_BODY_BYTES))
+                    } else {
+                        store.summary()
+                    }
+                    committed = true
+                    writeJson(output, 200, Json.stringify(result).toByteArray(Charsets.UTF_8), false)
+                } else if (route == "/v1/notify" || notifyId != null) {
                     val store = notifyStore ?: throw ApiException(404, "not_found")
                     val result = if (route == "/v1/notify") {
                         val body = readJsonBody(input, request.headers) as? Map<*, *>
@@ -337,12 +350,12 @@ class HttpServer(
         }
     }
 
-    private fun readJsonBody(input: InputStream, headers: Map<String, String>): Any? {
+    private fun readJsonBody(input: InputStream, headers: Map<String, String>, maxBytes: Int = 16 * 1024): Any? {
         if (headers.containsKey("transfer-encoding")) throw ApiException(400, "bad_request", "Chunked bodies are not supported")
         val rawLength = headers["content-length"] ?: throw ApiException(411, "bad_request", "Provide Content-Length")
         if (!rawLength.matches(Regex("[0-9]+"))) throw ApiException(400, "bad_request", "Invalid Content-Length")
-        val length = rawLength.toLongOrNull() ?: throw ApiException(413, "bad_request", "Body exceeds 16 KiB")
-        if (length > 16 * 1024) throw ApiException(413, "bad_request", "Body exceeds 16 KiB")
+        val length = rawLength.toLongOrNull() ?: throw ApiException(413, "bad_request", "Request body is too large")
+        if (length > maxBytes) throw ApiException(413, "bad_request", "Request body is too large")
         if (headers["content-type"]?.substringBefore(';')?.trim()?.lowercase(Locale.ROOT) != "application/json") {
             throw ApiException(400, "bad_request", "Use application/json")
         }

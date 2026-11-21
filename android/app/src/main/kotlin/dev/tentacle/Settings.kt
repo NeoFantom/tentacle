@@ -59,6 +59,34 @@ class Settings(context: Context) {
             if (!value) dev.tentacle.notify.PhoneNotifications.stopAlarms(contextForCodes)
         }
 
+    var ringStyle: String
+        get() = prefs.getString("ring_style", "both")!!.takeIf { it in RING_STYLES } ?: "both"
+        set(value) {
+            require(value in RING_STYLES) { "Invalid ring style" }
+            prefs.edit().putString("ring_style", value).apply()
+        }
+
+    var forcedAllowed: Boolean
+        get() = prefs.getBoolean("forced_allowed", false)
+        set(value) {
+            prefs.edit().putBoolean("forced_allowed", value).apply()
+            if (!value) dev.tentacle.notify.PhoneNotifications.stopForcedAlarms(contextForCodes)
+        }
+
+    var forcedVolumePercent: Int
+        get() = prefs.getInt("forced_volume_percent", 100).coerceIn(10, 100)
+        set(value) {
+            require(value in 10..100) { "Alarm volume must be between 10 and 100 percent" }
+            prefs.edit().putInt("forced_volume_percent", value).apply()
+        }
+
+    var forcedCapMinutes: Int
+        get() = prefs.getInt("forced_cap_minutes", 10).takeIf { it in FORCED_CAPS } ?: 10
+        set(value) {
+            require(value in FORCED_CAPS) { "Invalid forced alert sound cap" }
+            prefs.edit().putInt("forced_cap_minutes", value).apply()
+        }
+
     var startOnBoot: Boolean
         get() = prefs.getBoolean("start_on_boot", prefs.getBoolean("started_once", false))
         set(value) { prefs.edit().putBoolean("start_on_boot", value).apply() }
@@ -166,6 +194,8 @@ class Settings(context: Context) {
         const val DEFAULT_TUNNEL_USER = "tentacle"
         const val DEFAULT_TUNNEL_PORT = 22
         const val DEFAULT_REMOTE_PORT = 8765
+        val RING_STYLES = listOf("both", "vibrate", "sound")
+        val FORCED_CAPS = listOf(5, 10, 15, 20, 30)
         private val tokenLock = Any()
     }
 }

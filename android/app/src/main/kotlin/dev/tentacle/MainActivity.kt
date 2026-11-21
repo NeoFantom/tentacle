@@ -32,6 +32,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
@@ -144,6 +145,13 @@ class MainActivity : Activity() {
     private lateinit var urgentSwitch: Switch
     private lateinit var notifyHelp: LinearLayout
     private lateinit var testUrgent: Button
+    private lateinit var forcedSwitch: Switch
+    private lateinit var testForced: Button
+    private lateinit var ringStyleButton: Button
+    private lateinit var forcedCapButton: Button
+    private lateinit var forcedVolume: SeekBar
+    private lateinit var forcedVolumeLabel: TextView
+    private lateinit var questionsLabel: TextView
     private lateinit var codesNotificationsSwitch: Switch
     private lateinit var codesStatus: TextView
     private lateinit var codesAccessHelp: LinearLayout
@@ -213,6 +221,29 @@ class MainActivity : Activity() {
             settings.phoneNotificationsEnabled = intent.getBooleanExtra("phone_notifications_enabled", false)
             intent.removeExtra("phone_notifications_enabled")
         }
+        if (intent.hasExtra("forced_allowed")) {
+            settings.forcedAllowed = intent.getBooleanExtra("forced_allowed", false)
+            intent.removeExtra("forced_allowed")
+        }
+        intent.getStringExtra("ring_style")?.let {
+            if (it in Settings.RING_STYLES) settings.ringStyle = it
+            intent.removeExtra("ring_style")
+        }
+        if (intent.hasExtra("forced_volume_percent")) {
+            val value = intent.getIntExtra("forced_volume_percent", 100)
+            if (value in 10..100) settings.forcedVolumePercent = value
+            intent.removeExtra("forced_volume_percent")
+        }
+        if (intent.hasExtra("forced_cap_minutes")) {
+            val value = intent.getIntExtra("forced_cap_minutes", 10)
+            if (value in Settings.FORCED_CAPS) settings.forcedCapMinutes = value
+            intent.removeExtra("forced_cap_minutes")
+        }
+        intent.getStringExtra("test_level")?.let {
+            if (it in listOf("normal", "ring", "urgent", "forced")) testNotify(if (it == "ring") "urgent" else it)
+            intent.removeExtra("test_level")
+        }
+        refreshNotify()
         if (intent.hasExtra("codes_enabled")) {
             settings.codesEnabled = intent.getBooleanExtra("codes_enabled", false)
             intent.removeExtra("codes_enabled")
@@ -884,7 +915,9 @@ class MainActivity : Activity() {
 
     private fun notifySection(body: LinearLayout) {
         text(body, getString(R.string.notify_section), 16f, bold = true)
-        urgentSwitch = switch(body, getString(R.string.notify_allow_urgent), settings.urgentAllowed) { enabled ->
+        text(body, getString(R.string.notify_normal_always), bold = true)
+        text(body, getString(R.string.notify_normal_help), 13f, secondary = true)
+        urgentSwitch = switch(body, getString(R.string.notify_allow_ring), settings.urgentAllowed) { enabled ->
             if (!enabled) {
                 settings.urgentAllowed = false
                 refreshNotify()
@@ -892,8 +925,8 @@ class MainActivity : Activity() {
                 updating = true
                 urgentSwitch.isChecked = false
                 updating = false
-                AlertDialog.Builder(this).setTitle(R.string.notify_allow_urgent)
-                    .setMessage(R.string.notify_urgent_warning)
+                AlertDialog.Builder(this).setTitle(R.string.notify_allow_ring)
+                    .setMessage(R.string.notify_ring_warning)
                     .setNegativeButton(R.string.cancel, null)
                     .setPositiveButton(R.string.codes_turn_on) { _, _ ->
                         settings.urgentAllowed = true
@@ -901,20 +934,81 @@ class MainActivity : Activity() {
                     }.show()
             }
         }
+        ringStyleButton = button(body, "", ButtonKind.OUTLINE, fill = true) {
+            val labels = ringStyleLabels()
+            AlertDialog.Builder(this).setTitle(R.string.notify_ring_style)
+                .setSingleChoiceItems(labels, Settings.RING_STYLES.indexOf(settings.ringStyle)) { dialog, which ->
+                    settings.ringStyle = Settings.RING_STYLES[which]
+                    dialog.dismiss()
+                    refreshNotify()
+                }.setNegativeButton(R.string.cancel, null).show()
+        }
+        forcedSwitch = switch(body, getString(R.string.notify_allow_forced), settings.forcedAllowed) { enabled ->
+            if (!enabled) {
+                settings.forcedAllowed = false
+                refreshNotify()
+            } else {
+                updating = true
+                forcedSwitch.isChecked = false
+                updating = false
+                AlertDialog.Builder(this).setTitle(R.string.notify_allow_forced)
+                    .setMessage(R.string.notify_forced_warning)
+                    .setNegativeButton(R.string.cancel, null)
+                    .setPositiveButton(R.string.codes_turn_on) { _, _ ->
+                        settings.forcedAllowed = true
+                        refreshNotify()
+                    }.show()
+            }
+        }
+        forcedVolumeLabel = text(body, "")
+        forcedVolume = SeekBar(this).apply {
+            max = 90
+            contentDescription = getString(R.string.notify_alarm_volume)
+            progress = settings.forcedVolumePercent - 10
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                    if (fromUser) settings.forcedVolumePercent = progress + 10
+                    refreshForcedVolumeLabel()
+                }
+                override fun onStartTrackingTouch(bar: SeekBar) = Unit
+                override fun onStopTrackingTouch(bar: SeekBar) = Unit
+            })
+            body.addView(this, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
+        }
+        forcedCapButton = button(body, "", ButtonKind.OUTLINE, fill = true) {
+            val labels = Settings.FORCED_CAPS.map { getString(R.string.notify_minutes, it) }.toTypedArray()
+            AlertDialog.Builder(this).setTitle(R.string.notify_stop_after)
+                .setSingleChoiceItems(labels, Settings.FORCED_CAPS.indexOf(settings.forcedCapMinutes)) { dialog, which ->
+                    settings.forcedCapMinutes = Settings.FORCED_CAPS[which]
+                    dialog.dismiss()
+                    refreshNotify()
+                }.setNegativeButton(R.string.cancel, null).show()
+        }
+        questionsLabel = text(body, "", 13f, secondary = true)
         notifyHelp = column().also { body.addView(it) }
-        val tests = buttonRow(body)
-        button(tests, getString(R.string.notify_test_normal), ButtonKind.OUTLINE, fill = true) { testNotify(false) }
-        testUrgent = button(tests, getString(R.string.notify_test_urgent), ButtonKind.OUTLINE, fill = true) { testNotify(true) }
+        button(body, getString(R.string.notify_test_normal), ButtonKind.OUTLINE, fill = true) { testNotify("normal") }
+        testUrgent = button(body, getString(R.string.notify_test_ring), ButtonKind.OUTLINE, fill = true) { testNotify("urgent") }
+        testForced = button(body, getString(R.string.notify_test_forced), ButtonKind.OUTLINE, fill = true) { testNotify("forced") }
+        refreshNotify()
     }
 
-    private fun testNotify(urgent: Boolean) {
-        if (urgent && !settings.urgentAllowed) return
-        if (urgent && !ServerStatus.value.running) ServerService.start(this)
+    private fun ringStyleLabels() = arrayOf(getString(R.string.notify_style_both),
+        getString(R.string.notify_style_vibrate), getString(R.string.notify_style_sound))
+
+    private fun refreshForcedVolumeLabel() {
+        val value = if (settings.forcedVolumePercent == 100) getString(R.string.notify_volume_maximum)
+            else getString(R.string.notify_volume_percent, settings.forcedVolumePercent)
+        forcedVolumeLabel.text = getString(R.string.notify_alarm_volume_value, value)
+    }
+
+    private fun testNotify(level: String) {
+        if (level == "urgent" && !settings.urgentAllowed || level == "forced" && !settings.forcedAllowed) return
+        if (level != "normal" && !ServerStatus.value.running) ServerService.start(this)
         Thread({
             val result = runCatching {
                 dev.tentacle.notify.PhoneNotifications.get(this).post(
                     title = null, text = getString(R.string.notify_test_text),
-                    level = if (urgent) "urgent" else "normal", id = null)
+                    level = level, id = null)
             }
             runOnUiThread {
                 val entry = result.getOrNull()
@@ -935,8 +1029,24 @@ class MainActivity : Activity() {
         val permissions = dev.tentacle.notify.PhoneNotifications.permissions(this)
         updating = true
         urgentSwitch.isChecked = settings.urgentAllowed
+        forcedSwitch.isChecked = settings.forcedAllowed
+        forcedVolume.progress = settings.forcedVolumePercent - 10
         updating = false
         testUrgent.isEnabled = settings.urgentAllowed
+        testForced.isEnabled = settings.forcedAllowed
+        ringStyleButton.text = getString(R.string.notify_ring_style_value,
+            ringStyleLabels()[Settings.RING_STYLES.indexOf(settings.ringStyle)])
+        forcedCapButton.text = getString(R.string.notify_stop_after_value,
+            getString(R.string.notify_minutes, settings.forcedCapMinutes))
+        refreshForcedVolumeLabel()
+        val questionStore = dev.tentacle.notify.PhoneNotifications.questions(this)
+        val questions = questionStore.summary()
+        val activeLanguage = AppLanguage.currentTag(this).ifEmpty { resources.configuration.locales[0].language }
+        val questionLanguage = if (activeLanguage.startsWith("zh", ignoreCase = true)) "zh" else "en"
+        val counts = questions["counts"] as Map<*, *>
+        val fromComputer = questions["source"] == "computer" && (counts[questionLanguage] as Number).toInt() > 0
+        questionsLabel.text = getString(if (fromComputer) R.string.notify_questions_computer
+            else R.string.notify_questions_bundled, questionStore.questionsFor(questionLanguage).size)
         notifyHelp.removeAllViews()
         fun fix(message: Int, action: () -> Unit) {
             text(notifyHelp, getString(message), 13f, secondary = true)
@@ -954,7 +1064,7 @@ class MainActivity : Activity() {
         if (!permissions.normalChannelAllowed) fix(R.string.notify_normal_blocked) {
             channelSettings(dev.tentacle.notify.PhoneNotifications.NORMAL_CHANNEL)
         }
-        if (!permissions.urgentChannelAllowed) fix(R.string.notify_urgent_blocked) {
+        if (!permissions.urgentChannelAllowed) fix(R.string.notify_ring_blocked) {
             channelSettings(dev.tentacle.notify.PhoneNotifications.URGENT_CHANNEL)
         }
     }

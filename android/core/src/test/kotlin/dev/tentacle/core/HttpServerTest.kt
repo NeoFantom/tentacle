@@ -28,6 +28,7 @@ class HttpServerTest {
     private lateinit var codes: CodeStore
     private lateinit var notifications: NotifyStore
     private lateinit var phoneNotifications: PhoneNotificationStore
+    private lateinit var questions: AlertQuestionStore
     private val loopback: String = InetAddress.getLoopbackAddress().hostAddress
     private var token = "test-token"
 
@@ -41,6 +42,7 @@ class HttpServerTest {
             prepare = { NotifyDelivery(it.requestedLevel) },
             deliver = { _, delivery -> delivery },
         )
+        questions = AlertQuestionStore(tempDir.resolve("notify-questions.json").toFile()) { 9876L }
         server = HttpServer(
             port = 0,
             bind = loopback,
@@ -50,6 +52,7 @@ class HttpServerTest {
             codeStore = codes,
             notifyStore = notifications,
             phoneNotificationStore = phoneNotifications,
+            questionStore = questions,
             info = {
                 PingInfo(
                     version = "0.1.0-test",
@@ -879,6 +882,38 @@ class HttpServerTest {
             assertEquals("acknowledged", response["state"])
             assertTrue((response["acknowledged_ms"] as Number).toLong() > 0)
         } finally { pool.shutdownNow() }
+    }
+
+    @Test
+    fun `question endpoints show replace clear validate and do not collide with notify item`() {
+        val initial = Json.parse(request("GET", "/v1/notify/questions").text) as Map<*, *>
+        assertEquals("bundled", initial["source"])
+        assertTrue((initial["count"] as Number).toInt() >= 90)
+
+        val supplied = Json.stringify(mapOf("questions" to listOf(
+            mapOf("lang" to "en", "q" to "What is 2 + 2?", "answers" to listOf("4"), "domain" to "math"),
+            mapOf("lang" to "zh", "q" to "二加二等于多少？", "answers" to listOf("4", "四")),
+        )))
+        val put = request("PUT", "/v1/notify/questions",
+            headers = mapOf("Content-Type" to "application/json"), body = supplied)
+        assertEquals(200, put.status)
+        val summary = Json.parse(put.text) as Map<*, *>
+        assertEquals("computer", summary["source"])
+        assertEquals(2L, summary["count"])
+        assertEquals(9876L, summary["updated_ms"])
+
+        val invalid = request("PUT", "/v1/notify/questions",
+            headers = mapOf("Content-Type" to "application/json"),
+            body = "{\"questions\":[{\"lang\":\"en\",\"q\":\"\",\"answers\":[\"x\"]}]}")
+        assertEquals(400, invalid.status)
+        assertEquals("computer", (Json.parse(request("GET", "/v1/notify/questions").text) as Map<*, *>)["source"])
+
+        val clear = request("PUT", "/v1/notify/questions",
+            headers = mapOf("Content-Type" to "application/json"), body = "{\"questions\":[]}")
+        assertEquals("bundled", (Json.parse(clear.text) as Map<*, *>)["source"])
+        assertEquals(405, request("POST", "/v1/notify/questions", body = "{}").status)
+        assertEquals(413, request("PUT", "/v1/notify/questions",
+            headers = mapOf("Content-Type" to "application/json"), body = " ".repeat(64 * 1024 + 1)).status)
     }
 
     @Test

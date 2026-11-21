@@ -14,6 +14,7 @@ import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -29,6 +30,8 @@ import dev.tentacle.core.NotifyDelivery
 import dev.tentacle.core.NotifyMessage
 import dev.tentacle.core.NotifyStore
 import dev.tentacle.core.Redactor
+import dev.tentacle.core.AlertQuestionStore
+import java.io.File
 
 /** Framework delivery boundary. All alarm resources and callbacks are owned by the main thread. */
 object PhoneNotifications {
@@ -37,6 +40,7 @@ object PhoneNotifications {
     const val EXTRA_ID = "notify_id"
     const val ACTION_ACK = "dev.tentacle.notify.ACK"
     const val ACTION_DISMISS = "dev.tentacle.notify.DISMISS"
+    private const val EXTRA_FORCED_MARKER = "dev.tentacle.notify.FORCED"
     private const val NOTIFICATION_ID = 2
     private val handler = Handler(Looper.getMainLooper())
     private val deadlines = AlertDeadline(SystemClock::elapsedRealtime)
@@ -49,6 +53,7 @@ object PhoneNotifications {
     private var vibrator: Vibrator? = null
     private var alarmWakeLock: PowerManager.WakeLock? = null
     @Volatile private var store: NotifyStore? = null
+    @Volatile private var questionStore: AlertQuestionStore? = null
 
     fun get(context: Context): NotifyStore = store ?: synchronized(this) {
         store ?: run {
@@ -86,7 +91,7 @@ object PhoneNotifications {
             localized.getString(R.string.notify_channel), NotificationManager.IMPORTANCE_DEFAULT))
         manager.deleteNotificationChannel(UrgentChannel.REPLACED_ID)
         manager.createNotificationChannel(NotificationChannel(URGENT_CHANNEL,
-            localized.getString(R.string.notify_urgent_channel), UrgentChannel.IMPORTANCE).apply {
+            localized.getString(R.string.notify_ring_channel), UrgentChannel.IMPORTANCE).apply {
             setSound(UrgentChannel.sound, null)
             enableVibration(UrgentChannel.VIBRATION_ENABLED)
             lockscreenVisibility = UrgentChannel.LOCKSCREEN_VISIBILITY
@@ -98,6 +103,7 @@ object PhoneNotifications {
         val manager = context.getSystemService(NotificationManager::class.java)
         return NotifyPermissions(
             urgentAllowed = Settings(context).urgentAllowed,
+            forcedAllowed = Settings(context).forcedAllowed,
             notificationsAllowed = manager.areNotificationsEnabled() && (Build.VERSION.SDK_INT < 33 ||
                 context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED),
             normalChannelAllowed = manager.getNotificationChannel(NORMAL_CHANNEL)?.importance != NotificationManager.IMPORTANCE_NONE,
@@ -108,41 +114,75 @@ object PhoneNotifications {
 
     private fun post(context: Context, message: NotifyMessage, delivery: NotifyDelivery, quiet: Boolean = false) {
         val localized = AppLanguage.wrap(context)
-        val urgent = NotifyPolicy.usesAppAlarm(delivery.level, quiet)
+        val alarm = NotifyPolicy.usesAppAlarm(delivery.level, quiet)
+        val forced = delivery.level == "forced"
+        val tapActivity = if (forced) ForcedAlertActivity::class.java else NotificationOpenActivity::class.java
         val tap = PendingIntent.getActivity(context, 0,
-            Intent(context, NotificationOpenActivity::class.java).setData(uri(message.id, "tap"))
+            Intent(context, tapActivity).setData(uri(message.id, "tap"))
                 .putExtra(EXTRA_ID, message.id),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val builder = Notification.Builder(localized, if (urgent) URGENT_CHANNEL else NORMAL_CHANNEL)
+        val builder = Notification.Builder(localized, if (delivery.level == "normal") NORMAL_CHANNEL else URGENT_CHANNEL)
             .setSmallIcon(R.drawable.ic_server)
             .setContentTitle(message.title)
             .setContentText(message.text)
             .setStyle(Notification.BigTextStyle().bigText(message.text))
             .setContentIntent(tap)
             .setDeleteIntent(broadcast(context, message.id, ACTION_DISMISS))
-            .setAutoCancel(true)
-            .setCategory(if (urgent) Notification.CATEGORY_ALARM else Notification.CATEGORY_MESSAGE)
+            .addExtras(Bundle().apply { putBoolean(EXTRA_FORCED_MARKER, forced) })
+            .setAutoCancel(!forced)
+            .setOngoing(forced && (!quiet || ForcedAlarm.isRinging(message.id)))
+            .setCategory(if (delivery.level == "normal") Notification.CATEGORY_MESSAGE else Notification.CATEGORY_ALARM)
         if (delivery.level == "urgent") {
             builder.addAction(Notification.Action.Builder(null, localized.getString(R.string.notify_acknowledge),
                 broadcast(context, message.id, ACTION_ACK)).build())
         }
-        if (urgent && permissions(context).fullScreenAllowed) {
+        if (alarm && permissions(context).fullScreenAllowed) {
+            val activity = if (forced) ForcedAlertActivity::class.java else UrgentAlertActivity::class.java
             val fullScreen = PendingIntent.getActivity(context, 0,
-                Intent(context, UrgentAlertActivity::class.java).setData(uri(message.id, "alert"))
+                Intent(context, activity).setData(uri(message.id, "alert"))
                     .putExtra(EXTRA_ID, message.id).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             builder.setFullScreenIntent(fullScreen, true)
         }
         if (quiet) builder.setOnlyAlertOnce(true)
-        if (urgent) deadlines.register(message.id)
         context.getSystemService(NotificationManager::class.java).notify(message.id, NOTIFICATION_ID, builder.build())
-        if (urgent) {
+        if (alarm) {
             handler.post {
                 val entry = runCatching { get(context).get(message.id) }.getOrNull()
                 if (entry?.state != "shown") return@post
-                timeouts.arm(message.id) { stopAlarm(context, message.id, quiet = true) }
-                // The app owns alarm audio and vibration, with or without full-screen access.
-                startAlarm(context, message.id)
+                if (forced) {
+                    val settings = Settings(context)
+                    if (!settings.forcedAllowed) {
+                        abortForced(context, message.id, "dismissed", "forced alert disabled before start")
+                        return@post
+                    }
+                    val currentPermissions = permissions(context)
+                    if (!currentPermissions.notificationsAllowed || !currentPermissions.urgentChannelAllowed) {
+                        abortForced(context, message.id, "expired", "forced alert notification unavailable before start")
+                        return@post
+                    }
+                    val started = runCatching {
+                        ForcedAlarm.start(
+                            context, message.id, settings.forcedCapMinutes, settings.forcedVolumePercent,
+                            onTimeout = { timeoutForced(context, it) },
+                            onAllStopped = { refreshRingVibration(context) },
+                        )
+                    }.getOrElse {
+                        ForcedAlarm.stop(context, message.id)
+                        refreshRingVibration(context)
+                        false
+                    }
+                    if (!started) {
+                        abortForced(context, message.id, "expired", "forced alert could not save alarm volume")
+                    } else {
+                        // ForcedAlarm has replaced the application-wide vibration pattern.
+                        vibrator = null
+                    }
+                } else {
+                    deadlines.register(message.id)
+                    timeouts.arm(message.id) { stopAlarm(context, message.id, quiet = true) }
+                    startAlarm(context, message.id)
+                }
             }
         }
     }
@@ -154,10 +194,85 @@ object PhoneNotifications {
     fun respond(context: Context, id: String, state: String) {
         // Activities and receivers run here; serialize alarm cleanup with the timeout callback.
         handler.post {
+            val entry = runCatching { get(context).get(id) }.getOrNull() ?: return@post
+            if (entry.delivery.level == "forced") return@post
             val changed = runCatching { get(context).transition(id, state) }.getOrNull()
             stopAlarm(context, id, quiet = false)
             context.getSystemService(NotificationManager::class.java).cancel(id, NOTIFICATION_ID)
             if (changed != null) AppLog.append("notify id=$id state=${changed.state}")
+        }
+    }
+
+    fun questions(context: Context): AlertQuestionStore = questionStore ?: synchronized(this) {
+        questionStore ?: AlertQuestionStore(File(context.applicationContext.filesDir, "notify-questions.json"))
+            .also { questionStore = it }
+    }
+
+    fun recoverSavedVolume(context: Context) {
+        ForcedAlarm.recoverSavedVolume(context)
+        val manager = context.getSystemService(NotificationManager::class.java)
+        manager.activeNotifications.filter {
+            it.id == NOTIFICATION_ID && it.notification.extras.getBoolean(EXTRA_FORCED_MARKER, false)
+        }.forEach { manager.cancel(it.tag, it.id) }
+    }
+
+    private fun abortForced(context: Context, id: String, state: String, logMessage: String) {
+        val changed = if (state == "dismissed") {
+            runCatching { get(context).transitionForcedDismissed(id) }.getOrNull()
+        } else {
+            runCatching { get(context).transition(id, state) }.getOrNull()
+        }
+        context.getSystemService(NotificationManager::class.java).cancel(id, NOTIFICATION_ID)
+        observers.toList().forEach { it(id) }
+        AppLog.append("$logMessage id=$id state=${changed?.state ?: "unchanged"}")
+    }
+
+    fun answerForced(context: Context, id: String) {
+        handler.post {
+            val entry = runCatching { get(context).get(id) }.getOrNull() ?: return@post
+            if (entry.delivery.level != "forced" || entry.state !in setOf("shown", "timeout")) return@post
+            val changed = runCatching { get(context).transitionForcedAnswered(id) }.getOrNull() ?: return@post
+            val forcedIds = ForcedAlarm.stopAll(context)
+            refreshRingVibration(context)
+            (forcedIds + changed.orEmpty().map { it.message.id } + id).distinct().forEach {
+                context.getSystemService(NotificationManager::class.java).cancel(it, NOTIFICATION_ID)
+                observers.toList().forEach { observer -> observer(it) }
+            }
+            changed?.forEach { AppLog.append("notify id=${it.message.id} state=${it.state}") }
+        }
+    }
+
+    private fun timeoutForced(context: Context, id: String) {
+        val changed = runCatching { get(context).transition(id, "timeout") }.getOrNull()
+        val entry = runCatching { get(context).get(id) }.getOrNull()
+        if (entry != null) runCatching { post(context, entry.message, entry.delivery, quiet = true) }
+        observers.toList().forEach { it(id) }
+        if (changed != null) AppLog.append("notify id=$id state=${changed.state}")
+    }
+
+    fun dismissForcedFromSettings(context: Context) {
+        handler.post {
+            val ids = ForcedAlarm.stopAll(context)
+            refreshRingVibration(context)
+            ids.forEach { id ->
+                runCatching { get(context).transitionForcedDismissed(id) }
+                context.getSystemService(NotificationManager::class.java).cancel(id, NOTIFICATION_ID)
+                observers.toList().forEach { it(id) }
+            }
+        }
+    }
+
+    fun onNotificationDismissed(context: Context, id: String) {
+        handler.post {
+            val entry = runCatching { get(context).get(id) }.getOrNull() ?: return@post
+            if (entry.delivery.level == "forced" && entry.state == "shown") {
+                // Some Android builds permit an ongoing notification to be swiped; put it back without alerting.
+                runCatching { post(context, entry.message, entry.delivery, quiet = true) }
+            } else if (entry.delivery.level == "forced") {
+                context.getSystemService(NotificationManager::class.java).cancel(id, NOTIFICATION_ID)
+            } else {
+                respond(context, id, "dismissed")
+            }
         }
     }
 
@@ -179,8 +294,9 @@ object PhoneNotifications {
                 // Keep the two-minute stop timer running even when the screen goes back to sleep.
                 acquire(deadlines.remaining(id).coerceAtLeast(1))
             }
+        val style = Settings(context).ringStyle
         val alarmVolume = context.getSystemService(AudioManager::class.java).getStreamVolume(AudioManager.STREAM_ALARM)
-        val sound = if (UrgentAlarm.shouldPlaySound(alarmVolume)) UrgentAlarm.sound(
+        val sound = if (UrgentAlarm.shouldPlaySound(style, alarmVolume)) UrgentAlarm.sound(
             alarm = { RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM) },
             notification = { RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) },
             ringtone = { RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE) },
@@ -207,10 +323,7 @@ object PhoneNotifications {
                 AppLog.append("notify alarm audio unavailable")
             }
         }
-        @Suppress("DEPRECATION")
-        val motor = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-        vibrator = motor
-        runCatching { motor.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 700, 400, 700, 400), 0), alarmAttributes()) }
+        refreshRingVibration(context)
     }
 
     internal fun stopAlarm(context: Context, id: String, quiet: Boolean) {
@@ -218,7 +331,7 @@ object PhoneNotifications {
         if (activeId == id) {
             runCatching { player?.release() }
             player = null
-            runCatching { vibrator?.cancel() }
+            if (UrgentAlarm.mayCancelVibrator(ForcedAlarm.hasActive())) runCatching { vibrator?.cancel() }
             vibrator = null
             alarmWakeLock?.let { if (it.isHeld) it.release() }
             alarmWakeLock = null
@@ -241,6 +354,17 @@ object PhoneNotifications {
                 stopAlarm(context, it, quiet = true)
             }
         }
+    }
+
+    fun stopForcedAlarms(context: Context) = dismissForcedFromSettings(context)
+
+    private fun refreshRingVibration(context: Context) {
+        if (activeId == null || vibrator != null ||
+            !UrgentAlarm.shouldVibrate(Settings(context).ringStyle, ForcedAlarm.hasActive())) return
+        @Suppress("DEPRECATION")
+        val motor = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        vibrator = motor
+        runCatching { motor.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 700, 400, 700, 400), 0), alarmAttributes()) }
     }
 
     private fun alarmAttributes() = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)

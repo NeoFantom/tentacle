@@ -8,11 +8,9 @@ import android.content.Intent
 class NotifyReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getStringExtra(PhoneNotifications.EXTRA_ID) ?: return
-        val state = when (intent.action) {
-            PhoneNotifications.ACTION_ACK -> "acknowledged"
-            PhoneNotifications.ACTION_DISMISS -> "dismissed"
-            else -> return
+        when (intent.action) {
+            PhoneNotifications.ACTION_ACK -> PhoneNotifications.respond(context.applicationContext, id, "acknowledged")
+            PhoneNotifications.ACTION_DISMISS -> PhoneNotifications.onNotificationDismissed(context.applicationContext, id)
         }
-        PhoneNotifications.respond(context.applicationContext, id, state)
     }
 }

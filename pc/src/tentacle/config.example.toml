@@ -50,6 +50,11 @@ min_age_s = 60                 # newer files are listed with recording=true
 [calls]
 timezone = ""                  # IANA zone of timestamps in file names; empty = the phone's reported zone
 
+[notify]
+# Optional generic AI CLI. It receives a fixed question-generation prompt on stdin.
+# question_command = "ai-cli run"
+question_timeout_s = 300
+
 [asr]
 backend = "funasr"             # funasr | faster-whisper | command | none
 language = "zh"
