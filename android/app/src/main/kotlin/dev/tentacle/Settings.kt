@@ -37,6 +37,21 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("codes_notifications", false)
         set(value) { prefs.edit().putBoolean("codes_notifications", value).apply() }
 
+    var phoneNotificationsEnabled: Boolean
+        get() = prefs.getBoolean("phone_notifications_enabled", false)
+        set(value) {
+            prefs.edit().putBoolean("phone_notifications_enabled", value).apply()
+            dev.tentacle.feed.PhoneNotificationStores.setEnabled(contextForCodes, value)
+        }
+
+    var phoneNotificationsIncludeOngoing: Boolean
+        get() = prefs.getBoolean("phone_notifications_include_ongoing", false)
+        set(value) { prefs.edit().putBoolean("phone_notifications_include_ongoing", value).apply() }
+
+    var phoneNotificationsExcludedPackages: Set<String>
+        get() = prefs.getStringSet("phone_notifications_excluded_packages", emptySet())!!.toSet()
+        set(value) { prefs.edit().putStringSet("phone_notifications_excluded_packages", value.toSet()).apply() }
+
     var urgentAllowed: Boolean
         get() = prefs.getBoolean("urgent_allowed", false)
         set(value) {

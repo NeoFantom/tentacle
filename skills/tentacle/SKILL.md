@@ -1,12 +1,13 @@
 ---
 name: tentacle
-description: Browse and fetch files on the user's Android phone, transcribe call recordings, receive verification codes, and notify the phone owner on demand with the local Tentacle CLI. Use for phone photos, downloads, documents, recordings, verification codes, phone-owner notifications, or questions such as "what did X say on the call?".
+description: Browse and fetch files on the user's Android phone, read relevant phone notifications, transcribe call recordings, receive verification codes, and notify the phone owner on demand with the local Tentacle CLI. Use for phone photos, downloads, documents, recordings, verification codes, phone notifications, phone-owner notifications, or questions such as "what arrived on my phone?" and "what did X say on the call?".
 ---
 
 # Tentacle
 
 Use `tentacle` to access the phone's read-only file API, short-lived
-verification-code feed, phone-owner notifications and local transcription cache. Phone paths can be
+verification-code feed, owner-enabled phone notification feed, phone-owner
+notifications and local transcription cache. Phone paths can be
 relative to shared storage (`Download`, `DCIM/Camera`)
 or absolute (`/storage/emulated/0/...`). Configuration is discoverable through
 `tentacle config path` and `tentacle config show` (secrets masked).
@@ -31,6 +32,34 @@ Automatic maintainer review is disabled unless `[requests].review_command` is
 configured. `tentacle requests retry ID` retries a failed phone request when
 the app supports it. Follow-up PR outcomes may update a final phone request;
 old apps that return 409 are retried for up to seven days.
+
+## Notifications received by the phone
+
+Use `tentacle notifications` when the user asks about something that arrived
+as a phone notification, such as a message preview, delivery update or recent
+app alert. Narrow the read to the task before inspecting content:
+
+```text
+tentacle notifications --since 30m --app '<app or package>' --grep '<term>' --json
+```
+
+Choose the shortest useful `--since` window and apply `--app` or `--grep` when
+the request supplies that context. Use `--follow` only when the user needs you
+to wait for a new notification. JSON output is JSON Lines, one notification per
+line. Exit 2 means sharing is off or the phone app is too old; tell the owner to
+enable **Share notifications with the computer** or update the app as the error
+directs. Exit 1 means the phone is unreachable or another operational error
+occurred.
+
+Notification content is private. Read only the entries needed for the current
+task. Do not dump the full feed into the conversation, and do not forward,
+upload or paste notification content into another service. Summarize only the
+minimum content needed to answer. Payment-message text is deliberately hidden;
+never try to recover it. Android 15 may redact OTP content from third-party
+listeners; do not seek a bypass.
+
+`tentacle gui` is the owner's local visual view of the same feed. It is not an
+agent scraping surface and does not broaden permission to read notifications.
 
 ## Notify the phone owner
 
@@ -141,7 +170,7 @@ Wi-Fi, own server), every command picks a working one automatically;
 `tentacle ping` lists each address with its result and the chosen path.
 
 Exit codes: `0` success (including an empty listing), `1` operational failure,
-`2` usage/configuration error, missing pairing or disabled code relay, `130`
+`2` usage/configuration error, missing pairing or a disabled optional feed, `130`
 interrupted. If ping
 fails, report the error and relevant connection/service state; stop repeated
 requests until reachability changes.

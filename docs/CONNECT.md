@@ -5,6 +5,11 @@ The computer always speaks the same thing: the phone HTTP API
 differs. No custom transport protocol is involved; every mode is built from
 standard pieces (HTTP, TLS, SSH, a VPN mesh).
 
+File commands, verification codes and the
+[phone notification feed](NOTIFICATIONS.md) all use this same path selection.
+The local notification GUI keeps the phone token server-side and binds its own
+viewer to loopback; it does not add another route to the phone.
+
 | Mode | Phone | Computer `phone.url` | Works when |
 |---|---|---|---|
 | **LAN** | local server on (default port 8765) | `http://<phone Wi-Fi IP>:8765` | same network, no client isolation |

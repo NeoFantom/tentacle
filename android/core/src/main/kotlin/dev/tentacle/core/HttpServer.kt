@@ -32,6 +32,8 @@ class HttpServer(
     private val requestStore: RequestStore? = null,
     private val codeStore: CodeStore? = null,
     private val notifyStore: NotifyStore? = null,
+    private val phoneNotificationStore: PhoneNotificationStore? = null,
+    private val phoneNotificationStoreProvider: (() -> PhoneNotificationStore)? = null,
 ) {
     @Volatile var logger: (String) -> Unit = {}
     @Volatile var accessLogger: (String, String, Int, Long, Long) -> Unit = { _, _, _, _, _ -> }
@@ -152,7 +154,7 @@ class HttpServer(
                 if (route == "/v1/notify" && request.method != "POST") {
                     throw ApiException(405, "method_not_allowed", "Method is not allowed", mapOf("Allow" to "POST"))
                 }
-                if ((route !in setOf("/v1/ping", "/v1/ls", "/v1/stat", "/v1/find", "/v1/file", "/v1/requests", "/v1/codes", "/v1/notify") &&
+                if ((route !in setOf("/v1/ping", "/v1/ls", "/v1/stat", "/v1/find", "/v1/file", "/v1/requests", "/v1/codes", "/v1/notifications", "/v1/notify") &&
                     updateId == null && logId == null && notifyId == null) ||
                     (updateId != null && request.method != "POST")) {
                     throw ApiException(404, "not_found")
@@ -181,6 +183,42 @@ class HttpServer(
                             entry
                         }.stateJson()
                     }
+                    committed = true
+                    writeJson(output, 200, Json.stringify(result).toByteArray(Charsets.UTF_8), false)
+                } else if (route == "/v1/notifications") {
+                    // Persistent feed state may touch disk, so resolve it lazily on this HTTP worker.
+                    val store = phoneNotificationStore ?: phoneNotificationStoreProvider?.invoke()
+                        ?: throw ApiException(404, "not_found")
+                    val since = query.number("since") ?: 0L
+                    if (since < 0) throw ApiException(400, "bad_request", "Since must not be negative")
+                    val wait = query.integer("wait", 0)
+                    if (wait !in 0..60) {
+                        throw ApiException(400, "bad_request", "Wait must be between 0 and 60 seconds")
+                    }
+                    val limit = query.integer("limit", 500)
+                    if (limit !in 1..500) {
+                        throw ApiException(400, "bad_request", "Limit must be between 1 and 500")
+                    }
+                    val app = query["app"]
+                    val initiallyEnabled = store.isEnabled
+                    val found = if (!initiallyEnabled) {
+                        emptyList()
+                    } else if (wait > 0 && longPollSlots.tryAcquire()) {
+                        try {
+                            store.awaitNewerThan(since, wait * 1000L, app, limit)
+                        } finally {
+                            longPollSlots.release()
+                        }
+                    } else {
+                        store.query(since, app, limit)
+                    }
+                    val enabled = store.isEnabled
+                    val notifications = if (enabled) found else emptyList()
+                    val result = linkedMapOf(
+                        "notifications" to notifications.map { it.toJson() },
+                        "now_ms" to System.currentTimeMillis(),
+                        "enabled" to enabled,
+                    )
                     committed = true
                     writeJson(output, 200, Json.stringify(result).toByteArray(Charsets.UTF_8), false)
                 } else if (route == "/v1/codes") {

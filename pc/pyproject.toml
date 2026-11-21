@@ -22,4 +22,4 @@ tentacle = "tentacle.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-tentacle = ["config.example.toml"]
+tentacle = ["config.example.toml", "gui.html"]
