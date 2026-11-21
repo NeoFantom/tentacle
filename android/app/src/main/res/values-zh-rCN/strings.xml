@@ -48,7 +48,9 @@
     <string name="connect_step_run">2. 在电脑上运行：</string>
     <string name="copy_all_links">复制配对链接</string>
     <string name="no_network">还没有可用地址。请连接 Wi-Fi，或打开 Tailscale 或自有服务器。</string>
-    <string name="more">更多</string>
+    <string name="pairing_details">地址与配对令牌</string>
+    <string name="section_expand">展开%1$s</string>
+    <string name="section_collapse">收起%1$s</string>
     <string name="single_links">单个地址的链接</string>
     <string name="token_label">Token</string>
     <string name="show">显示</string>
@@ -78,7 +80,9 @@
     <string name="requests_never_checked">还没有电脑检查过——请在电脑上运行 `tentacle requests watch`（参见 README）</string>
     <string name="requests_server_note">只有文件服务运行时，电脑才能看到这些需求。</string>
     <string name="requests_empty">你提交的需求会显示在这里。</string>
-    <string name="requests_more">更多</string>
+    <string name="requests_history">历史需求</string>
+    <string name="requests_details">需求详情</string>
+    <string name="requests_latest">最近需求：%1$s</string>
     <string name="requests_kind_change">功能修改</string>
     <string name="requests_kind_bug">问题修复</string>
     <string name="requests_status_waiting">等待电脑处理</string>

@@ -132,10 +132,15 @@ vibration but leaves both the notification and state as `shown`.
 `:app` owns `ServerService`, `MainActivity`, `BootReceiver`, pairing and settings.
 The main screen puts one status card (plain-language state, a single
 Start/Stop action, the state of each way in) first, shows a "needs attention"
-card only while a permission is missing, and keeps per-address links, token,
-advanced and app settings collapsed.
-The request card creates feature requests and bug requests with a redacted log
-snapshot. `:core` owns request length validation, atomic app-private request
+card only while a permission is missing, and keeps requests, pairing, connection
+configuration and app settings collapsed by default. Disclosure state and the
+request draft survive activity recreation. Connection status shortcuts expand
+the connection configuration before scrolling to the relevant option.
+The request card shows a compact latest-status summary while collapsed and
+creates feature requests and bug requests with a redacted log snapshot when
+expanded. History is a separate collapsed disclosure; rows show short previews
+with full text and results available in a scrollable details dialog.
+`:core` owns request length validation, atomic app-private request
 storage (newest 20 with logs), and the request endpoints; no endpoint creates
 requests. A process-wide store lets the UI queue requests while the server is
 stopped and observes status updates while visible. At most two HTTP workers

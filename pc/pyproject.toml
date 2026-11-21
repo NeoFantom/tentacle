@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tentacle"
-version = "0.7.1"
+version = "0.7.2"
 description = "A manual toolkit for browsing phone files and pulling or transcribing call recordings."
 readme = {text = "Tentacle is a manual toolkit for browsing phone files and pulling or transcribing call recordings.", content-type = "text/plain"}
 requires-python = ">=3.11"

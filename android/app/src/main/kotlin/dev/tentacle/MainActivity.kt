@@ -10,6 +10,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -24,6 +25,8 @@ import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -54,8 +57,8 @@ import java.net.InetAddress
 /**
  * One screen, ordered by importance: update banner (only when an update is
  * ready), status card with the single Start/Stop action and the state of each
- * way in, "needs attention" fixes (only while something is missing), pairing,
- * the optional ways to connect, collapsed settings, and a small update row.
+ * way in, "needs attention" fixes (only while something is missing), compact
+ * disclosures for requests, pairing, connection options and settings.
  */
 class MainActivity : Activity() {
     private enum class Tone { GOOD, WARN, BAD, NEUTRAL, BUSY }
@@ -64,6 +67,7 @@ class MainActivity : Activity() {
     private lateinit var settings: Settings
     private lateinit var scroll: ScrollView
     private lateinit var content: LinearLayout
+    private lateinit var screenSections: ScreenSections
 
     private lateinit var updateBanner: LinearLayout
     private lateinit var updateBannerText: TextView
@@ -81,6 +85,7 @@ class MainActivity : Activity() {
     private lateinit var attentionItems: LinearLayout
 
     private lateinit var connectCard: LinearLayout
+    private lateinit var connectBody: Expander
     private lateinit var connectMore: Expander
     private lateinit var pairs: LinearLayout
     private lateinit var tokenText: TextView
@@ -88,15 +93,17 @@ class MainActivity : Activity() {
 
     private lateinit var requestStore: RequestStore
     private lateinit var requestsCard: LinearLayout
+    private lateinit var requestsBody: Expander
+    private lateinit var requestSummary: TextView
     private lateinit var requestText: EditText
     private lateinit var requestCounter: TextView
     private lateinit var requestSend: Button
     private lateinit var requestServerNote: TextView
     private lateinit var requestBug: Button
     private lateinit var computerStatus: TextView
-    private lateinit var requestHistory: LinearLayout
     private lateinit var requestsMore: Expander
 
+    private lateinit var connectionsBody: Expander
     private lateinit var tailnetCard: LinearLayout
     private lateinit var tailnetSwitch: Switch
     private lateinit var tailnetStatusText: TextView
@@ -171,6 +178,10 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         settings = Settings(this)
         requestStore = RequestStores.get(this)
+        screenSections = ScreenSections(savedInstanceState?.getStringArrayList(SECTIONS_STATE))
+        if (savedInstanceState == null && settings.tunnelEnabled && settings.tunnelHost.isBlank()) {
+            screenSections.setOpen(ScreenSection.SERVER_SETUP, true)
+        }
         buildScreen()
         savedInstanceState?.getString(REQUEST_DRAFT_STATE)?.let { requestText.setText(it) }
         handleDebugIntent(intent)
@@ -249,15 +260,16 @@ class MainActivity : Activity() {
             pasteBox.setText(it)
             recognize()
         }
-        intent.getStringExtra("request_text")?.let { requestText.setText(it) }
+        intent.getStringExtra("request_text")?.let { requestsBody.open = true; requestText.setText(it) }
         intent.getStringExtra("expand")?.split(',')?.map(String::trim)?.forEach { name ->
             when (name) {
-                "more" -> connectMore.open = true
-                "tailnet" -> tailnetAdvanced.open = true
-                "server" -> serverSetup.open = true
-                "keys" -> serverKeys.open = true
+                "more" -> { connectBody.open = true; connectMore.open = true }
+                "tailnet" -> { connectionsBody.open = true; tailnetAdvanced.open = true }
+                "server" -> { connectionsBody.open = true; serverSetup.open = true }
+                "keys" -> { connectionsBody.open = true; serverKeys.open = true }
                 "settings" -> settingsBody.open = true
-                "requests_more" -> requestsMore.open = true
+                "requests" -> requestsBody.open = true
+                "requests_more" -> { requestsBody.open = true; requestsMore.open = true }
             }
         }
         intent.getStringExtra("scroll_to")?.let { name ->
@@ -272,7 +284,7 @@ class MainActivity : Activity() {
             }
             scroll.postDelayed({
                 when {
-                    target != null -> scroll.scrollTo(0, target.top - dp(8))
+                    target != null -> scrollToCard(target)
                     name == "top" -> scroll.scrollTo(0, 0)
                     else -> scroll.fullScroll(View.FOCUS_DOWN)
                 }
@@ -368,6 +380,7 @@ class MainActivity : Activity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         if (::requestText.isInitialized) outState.putString(REQUEST_DRAFT_STATE, requestText.text.toString())
+        outState.putStringArrayList(SECTIONS_STATE, screenSections.snapshot())
         super.onSaveInstanceState(outState)
     }
 
@@ -409,12 +422,13 @@ class MainActivity : Activity() {
         updateBannerSection()
         heroSection()
         attentionSection()
-        connectSection()
         requestsSection()
-        sectionLabel(getString(R.string.ways_title))
-        text(content, getString(R.string.ways_lan_note), 14f, secondary = true).setPadding(dp(4), 0, dp(4), dp(10))
-        tailnetSection()
-        serverSection()
+        connectSection()
+        val connectionsCard = disclosureCard()
+        connectionsBody = expander(connectionsCard, getString(R.string.ways_title), ScreenSection.CONNECTIONS, large = true)
+        text(connectionsBody.body, getString(R.string.ways_lan_note), 14f, secondary = true)
+        tailnetSection(connectionsBody.body)
+        serverSection(connectionsBody.body)
         settingsSection()
         footerSection()
     }
@@ -455,14 +469,15 @@ class MainActivity : Activity() {
     }
 
     private fun connectSection() {
-        connectCard = card()
-        cardTitle(connectCard, getString(R.string.connect_title))
-        text(connectCard, getString(R.string.connect_step_copy))
-        text(connectCard, getString(R.string.connect_step_run))
-        code(connectCard, "tentacle pair '<link>'")
-        button(connectCard, getString(R.string.copy_all_links), ButtonKind.PRIMARY, fill = true) { copyAllLinks() }
+        connectCard = disclosureCard()
+        connectBody = expander(connectCard, getString(R.string.connect_title), ScreenSection.PAIRING, large = true)
+        val body = connectBody.body
+        text(body, getString(R.string.connect_step_copy))
+        text(body, getString(R.string.connect_step_run))
+        code(body, "tentacle pair '<link>'")
+        button(body, getString(R.string.copy_all_links), ButtonKind.PRIMARY, fill = true) { copyAllLinks() }
             .also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(10) }
-        connectMore = expander(connectCard, getString(R.string.more))
+        connectMore = expander(body, getString(R.string.pairing_details), ScreenSection.PAIRING_DETAILS)
         val more = connectMore.body
         text(more, getString(R.string.single_links), 14f, bold = true)
         pairs = column().also { more.addView(it) }
@@ -490,9 +505,17 @@ class MainActivity : Activity() {
     }
 
     private fun requestsSection() {
-        requestsCard = card()
-        cardTitle(requestsCard, getString(R.string.requests_title))
-        text(requestsCard, getString(R.string.requests_scope), 14f, secondary = true)
+        requestsCard = disclosureCard()
+        requestsBody = expander(requestsCard, getString(R.string.requests_title), ScreenSection.REQUESTS, large = true)
+        requestSummary = text(requestsCard, "", 13f, secondary = true).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        // Keep the compact status directly below the header, even when the form is open.
+        requestsCard.removeView(requestSummary)
+        requestsCard.addView(requestSummary, 1)
+        val body = requestsBody.body
+        text(body, getString(R.string.requests_scope), 14f, secondary = true)
         requestText = EditText(this).apply {
             hint = getString(R.string.requests_hint)
             contentDescription = getString(R.string.requests_hint)
@@ -508,22 +531,21 @@ class MainActivity : Activity() {
                 override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = updateRequestInput()
                 override fun afterTextChanged(text: Editable?) = Unit
             })
-            requestsCard.addView(this, LinearLayout.LayoutParams(
+            body.addView(this, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(10) })
         }
-        requestCounter = text(requestsCard, "", 13f, secondary = true).apply { gravity = Gravity.END }
-        val actions = buttonRow(requestsCard)
+        requestCounter = text(body, "", 13f, secondary = true).apply { gravity = Gravity.END }
+        val actions = buttonRow(body)
         requestSend = button(actions, getString(R.string.requests_send), ButtonKind.PRIMARY, fill = true) {
             createRequest("feature")
         }
         requestBug = button(actions, getString(R.string.requests_bug), ButtonKind.OUTLINE, fill = true) {
             createRequest("bug")
         }
-        computerStatus = text(requestsCard, "", 14f).apply { setPadding(0, dp(12), 0, dp(4)) }
-        requestServerNote = text(requestsCard, getString(R.string.requests_server_note), 13f, secondary = true)
-        requestHistory = column().also { requestsCard.addView(it) }
-        requestsMore = expander(requestsCard, getString(R.string.requests_more))
+        computerStatus = text(body, "", 14f).apply { setPadding(0, dp(12), 0, dp(4)) }
+        requestServerNote = text(body, getString(R.string.requests_server_note), 13f, secondary = true)
+        requestsMore = expander(body, getString(R.string.requests_history), ScreenSection.REQUEST_HISTORY)
         updateRequestInput()
         refreshRequests()
     }
@@ -570,7 +592,7 @@ class MainActivity : Activity() {
     }
 
     private fun refreshRequests() {
-        if (!::requestHistory.isInitialized) return
+        if (!::requestsMore.isInitialized) return
         val now = System.currentTimeMillis()
         val lastPoll = requestStore.lastPolledMs
         val (pollText, pollTone) = when {
@@ -582,16 +604,20 @@ class MainActivity : Activity() {
         computerStatus.setTextColor(statusColor(pollTone))
 
         val requests = requestStore.list()
-        requestHistory.removeAllViews()
-        requests.take(5).forEach { requestRow(requestHistory, it, now) }
-        if (requests.isEmpty()) {
-            text(requestHistory, getString(R.string.requests_empty), 13f, secondary = true)
-        }
+        val latest = requests.firstOrNull()
+        requestSummary.text = if (latest == null) getString(R.string.requests_empty)
+            else getString(R.string.requests_latest, getString(requestStatus(latest.status).first))
+        requestSummary.setTextColor(statusColor(latest?.let { requestStatus(it.status).second } ?: Tone.NEUTRAL))
         requestsMore.body.removeAllViews()
-        requests.drop(5).forEach { requestRow(requestsMore.body, it, now) }
-        val hasMore = requests.size > 5
-        requestsMore.header.visibility = if (hasMore) View.VISIBLE else View.GONE
-        requestsMore.body.visibility = if (hasMore && requestsMore.open) View.VISIBLE else View.GONE
+        requests.forEach { requestRow(requestsMore.body, it, now) }
+        if (requests.isEmpty()) text(requestsMore.body, getString(R.string.requests_empty), 13f, secondary = true)
+    }
+
+    private fun requestStatus(status: String): Pair<Int, Tone> = when (status) {
+        "working" -> R.string.requests_status_working to Tone.BUSY
+        "done" -> R.string.requests_status_done to Tone.GOOD
+        "failed" -> R.string.requests_status_failed to Tone.BAD
+        else -> R.string.requests_status_waiting to Tone.WARN
     }
 
     private fun requestRow(parent: LinearLayout, request: AppRequest, now: Long) {
@@ -612,14 +638,25 @@ class MainActivity : Activity() {
                 ellipsize = TextUtils.TruncateAt.END
             }
         }
-        val (status, tone) = when (request.status) {
-            "working" -> R.string.requests_status_working to Tone.BUSY
-            "done" -> R.string.requests_status_done to Tone.GOOD
-            "failed" -> R.string.requests_status_failed to Tone.BAD
-            else -> R.string.requests_status_waiting to Tone.WARN
-        }
+        val (status, tone) = requestStatus(request.status)
         text(box, getString(status), 14f, bold = true).setTextColor(statusColor(tone))
-        if (request.message.isNotEmpty()) text(box, request.message, 13f, secondary = true)
+        if (request.message.isNotEmpty()) text(box, request.message, 13f, secondary = true).apply {
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        button(box, getString(R.string.view), ButtonKind.OUTLINE) {
+            val details = listOf(request.text, getString(status), request.message).filter { it.isNotBlank() }.joinToString("\n\n")
+            val detailText = TextView(this).apply {
+                text = details
+                textSize = 15f
+                setPadding(dp(20), dp(12), dp(20), dp(12))
+                setTextColor(color(R.color.text_primary))
+                setTextIsSelectable(true)
+            }
+            AlertDialog.Builder(this).setTitle(R.string.requests_details)
+                .setView(ScrollView(this).apply { addView(detailText) })
+                .setPositiveButton(R.string.close, null).show()
+        }
     }
 
     private fun relativeAge(ageMs: Long): String {
@@ -632,8 +669,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun tailnetSection() {
-        tailnetCard = card()
+    private fun tailnetSection(parent: LinearLayout) {
+        tailnetCard = card(parent)
         tailnetSwitch = cardSwitch(tailnetCard, getString(R.string.tailnet_title), settings.tailnetEnabled) {
             settings.tailnetEnabled = it
             if (ServerStatus.value.running) ServerService.start(this, restart = true)
@@ -650,7 +687,7 @@ class MainActivity : Activity() {
                 ServerService.tailnetLogin(this)
             }
         }
-        tailnetAdvanced = expander(tailnetCard, getString(R.string.tailnet_advanced))
+        tailnetAdvanced = expander(tailnetCard, getString(R.string.tailnet_advanced), ScreenSection.TAILNET_ADVANCED)
         val advanced = tailnetAdvanced.body
         val controlUrl = field(advanced, R.string.tailnet_control_url, settings.tailnetControlUrl, getString(R.string.tailnet_control_url_hint))
         tailnetKey = field(advanced, R.string.tailnet_auth_key, "", getString(R.string.tailnet_auth_key_hint)).apply {
@@ -684,8 +721,8 @@ class MainActivity : Activity() {
         text(advanced, getString(R.string.tailnet_proxy_help), 13f, secondary = true).setPadding(0, dp(10), 0, 0)
     }
 
-    private fun serverSection() {
-        serverCard = card()
+    private fun serverSection(parent: LinearLayout) {
+        serverCard = card(parent)
         tunnelSwitch = cardSwitch(serverCard, getString(R.string.server_title), settings.tunnelEnabled) {
             settings.tunnelEnabled = it
             if (it && settings.tunnelHost.isBlank()) serverSetup.open = true
@@ -702,7 +739,7 @@ class MainActivity : Activity() {
             visibility = View.GONE
             (layoutParams as LinearLayout.LayoutParams).topMargin = dp(8)
         }
-        serverSetup = expander(serverCard, getString(R.string.server_settings), open = settings.tunnelEnabled && settings.tunnelHost.isBlank())
+        serverSetup = expander(serverCard, getString(R.string.server_settings), ScreenSection.SERVER_SETUP)
         val setup = serverSetup.body
         text(setup, getString(R.string.paste_title), 15f, bold = true)
         text(setup, getString(R.string.paste_help), 14f, secondary = true)
@@ -742,7 +779,7 @@ class MainActivity : Activity() {
         button(setup, getString(R.string.save), ButtonKind.PRIMARY, fill = true) { saveServer() }
             .also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(14) }
 
-        serverKeys = expander(serverCard, getString(R.string.server_keys))
+        serverKeys = expander(serverCard, getString(R.string.server_keys), ScreenSection.SERVER_KEYS)
         val keys = serverKeys.body
         text(keys, getString(R.string.server_keys_help), 14f)
         button(keys, getString(R.string.copy_authorized), ButtonKind.TONAL, fill = true) {
@@ -772,8 +809,8 @@ class MainActivity : Activity() {
     }
 
     private fun settingsSection() {
-        settingsCard = card().apply { setPadding(dp(14), dp(4), dp(18), dp(8)) }
-        settingsBody = expander(settingsCard, getString(R.string.settings), large = true)
+        settingsCard = disclosureCard()
+        settingsBody = expander(settingsCard, getString(R.string.settings), ScreenSection.SETTINGS, large = true)
         val body = settingsBody.body
         notifySection(body)
         codesSection(body)
@@ -1500,14 +1537,20 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- widgets
 
     /** A collapsible block: a 48dp header row with a chevron, and a body shown on demand. */
-    private inner class Expander(parent: LinearLayout, private val title: String, open: Boolean, large: Boolean) {
+    private inner class Expander(parent: LinearLayout, private val title: String, private val section: ScreenSection, large: Boolean) {
         val header: TextView = TextView(this@MainActivity)
         val body: LinearLayout = column()
-        var open: Boolean = open
+        var open: Boolean
+            get() = screenSections.isOpen(section)
             set(value) {
-                field = value
+                screenSections.setOpen(section, value)
+                if (!value && body.hasFocus()) {
+                    getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(body.windowToken, 0)
+                    body.clearFocus()
+                }
                 body.visibility = if (value) View.VISIBLE else View.GONE
                 header.text = (if (value) "▾  " else "▸  ") + title
+                header.contentDescription = getString(if (value) R.string.section_collapse else R.string.section_expand, title)
             }
 
         init {
@@ -1520,31 +1563,42 @@ class MainActivity : Activity() {
                 minHeight = dp(48)
                 background = getDrawable(R.drawable.bg_row)
                 isClickable = true
+                isFocusable = true
                 setOnClickListener { this@Expander.open = !this@Expander.open }
             }
             parent.addView(header, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 .apply { topMargin = if (large) 0 else dp(4) })
             parent.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            this.open = open
+            this.open = screenSections.isOpen(section)
         }
     }
 
-    private fun expander(parent: LinearLayout, title: String, open: Boolean = false, large: Boolean = false) =
-        Expander(parent, title, open, large)
+    private fun expander(parent: LinearLayout, title: String, section: ScreenSection, large: Boolean = false) =
+        Expander(parent, title, section, large)
 
-    private fun card(): LinearLayout = column().apply {
+    private fun card(parent: LinearLayout = content): LinearLayout = column().apply {
         background = getDrawable(R.drawable.bg_card)
         setPadding(dp(18), dp(16), dp(18), dp(16))
-        content.addView(this, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        parent.addView(this, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             .apply { bottomMargin = dp(12) })
     }
 
-    private fun sectionLabel(title: String) {
-        text(content, title, 17f, bold = true).setPadding(dp(4), dp(12), 0, dp(2))
-    }
+    private fun disclosureCard(): LinearLayout = card().apply { setPadding(dp(18), dp(4), dp(18), dp(8)) }
 
-    private fun cardTitle(parent: LinearLayout, title: String): TextView =
-        text(parent, title, 18f, bold = true).apply { setPadding(0, 0, 0, dp(6)) }
+    private fun scrollToCard(target: View) {
+        if (target == tailnetCard || target == serverCard) connectionsBody.open = true
+        // Expanding changes descendant positions; wait until layout has measured them.
+        content.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
+            override fun onGlobalLayout() {
+                content.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                val bounds = Rect()
+                target.getDrawingRect(bounds)
+                content.offsetDescendantRectToMyCoords(target, bounds)
+                scroll.smoothScrollTo(0, bounds.top - dp(8))
+            }
+        })
+        content.requestLayout()
+    }
 
     private fun cardSwitch(parent: LinearLayout, title: String, checked: Boolean, action: (Boolean) -> Unit): Switch =
         switch(parent, title, checked, action).apply {
@@ -1570,7 +1624,7 @@ class MainActivity : Activity() {
             setPadding(dp(4), 0, dp(4), 0)
             if (target != null) {
                 background = getDrawable(R.drawable.bg_row)
-                setOnClickListener { scroll.smoothScrollTo(0, target.top - dp(8)) }
+                setOnClickListener { scrollToCard(target) }
             }
         }
         badge(line, when (tone) { Tone.GOOD -> "✓"; Tone.WARN -> "!"; Tone.BAD -> "✕"; Tone.BUSY -> "…"; else -> "–" }, tone, 24)
@@ -1757,6 +1811,7 @@ class MainActivity : Activity() {
         val shownUpdatePromptVersions = mutableSetOf<String>()
         const val SMS_PERMISSION_REQUEST = 3
         const val REQUEST_DRAFT_STATE = "request_draft"
+        const val SECTIONS_STATE = "screen_sections"
         const val REQUEST_REFRESH_MS = 10_000L
     }
 }

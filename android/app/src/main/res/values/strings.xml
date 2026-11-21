@@ -48,7 +48,9 @@
     <string name="connect_step_run">2. On the computer, run:</string>
     <string name="copy_all_links">Copy pairing link</string>
     <string name="no_network">No address yet. Connect to Wi-Fi, or turn on Tailscale or Own server.</string>
-    <string name="more">More</string>
+    <string name="pairing_details">Addresses and pairing token</string>
+    <string name="section_expand">Expand %1$s</string>
+    <string name="section_collapse">Collapse %1$s</string>
     <string name="single_links">Links with one address</string>
     <string name="token_label">Token</string>
     <string name="show">Show</string>
@@ -78,7 +80,9 @@
     <string name="requests_never_checked">No computer has checked yet — run `tentacle requests watch` on it (see README)</string>
     <string name="requests_server_note">The computer can only see requests while the file server is running.</string>
     <string name="requests_empty">Your requests will appear here.</string>
-    <string name="requests_more">More</string>
+    <string name="requests_history">Request history</string>
+    <string name="requests_details">Request details</string>
+    <string name="requests_latest">Latest: %1$s</string>
     <string name="requests_kind_change">Change</string>
     <string name="requests_kind_bug">Bug fix</string>
     <string name="requests_status_waiting">Waiting for the computer</string>
