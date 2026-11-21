@@ -1245,8 +1245,10 @@ class MainActivity : Activity() {
         ways.removeAllViews()
         ways.visibility = if (state.running) View.VISIBLE else View.GONE
         if (state.running) {
+            // A phone address does not prove a computer is on this network or can reach it.
             wayRow(getString(R.string.way_lan), lan?.host ?: getString(R.string.way_lan_none),
-                if (lan != null) Tone.GOOD else Tone.NEUTRAL, null)
+                Tone.NEUTRAL, null)
+            if (lan != null) text(ways, getString(R.string.way_lan_note), 13f, secondary = true)
             val (tailnetTone, tailnetText) = when {
                 !settings.tailnetEnabled -> Tone.NEUTRAL to getString(R.string.way_off)
                 tailnetUp -> Tone.GOOD to tailnet.ip!!

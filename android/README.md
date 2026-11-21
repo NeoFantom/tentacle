@@ -149,6 +149,14 @@ The app can check GitHub Releases for signed APK updates. Release builds use
 the repository supplied by `tentacle.updateRepo`; users can override the update
 source in settings. Android always asks the user to confirm installation, and
 may first require the app to be allowed to install unknown apps.
+With an update source configured, the running service periodically checks for
+published releases in the background. The owner starts download and installation
+from the update prompt or notification; the updater verifies that the APK belongs
+to Tentacle and has the installed app's signing certificate. If Android requests
+installation confirmation while the app is in the background, a notification
+opens that system dialog. Completing a code request does not install an APK:
+the change must first pass maintainer review and be published as a signed release.
+The phone API provides no remote or silent-install command.
 
 Port accepts 1024–65535 and restarts a running server when changed. Start on
 boot defaults to enabled after the first successful start; an explicit switch
