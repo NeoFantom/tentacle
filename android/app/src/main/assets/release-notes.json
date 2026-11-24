@@ -1,7 +1,7 @@
 {
   "notes": [
     {
-      "version": "unreleased",
+      "version": "0.7.8",
       "en": [
         "Tap a notification, its bundle or Notifications to read new alerts in full and expand older history, saved on your phone even after restarting the app."
       ],
