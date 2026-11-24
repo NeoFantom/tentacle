@@ -328,6 +328,9 @@
     <string name="notify_forced_new_question_note">Two tries used — here is a new question</string>
     <string name="notify_forced_submit">Submit</string>
     <string name="notify_inbox">Notifications</string>
+    <string name="notify_inbox_new">Notifications (%1$d new)</string>
+    <string name="notify_group_title">New notifications from your computer</string>
+    <string name="notify_group_text">Tap to read all current notifications.</string>
     <string name="notify_inbox_back">Back</string>
     <string name="notify_history_help">Full text of the latest %1$d notifications from your computer is saved on this phone. Reading here does not stop other alerts.</string>
     <string name="notify_current">Current notifications (%1$d)</string>

@@ -203,6 +203,10 @@ the inbox marks entries viewed locally, without acknowledging other alerts or
 stopping ring/forced alarms. Forced taps still require the existing question.
 History survives process restart; earlier alerts from versions without history
 cannot be recovered. No HTTP endpoint or acknowledgement semantics change.
+Normal/ring alerts use a separate notification group with a silent inbox summary
+that acknowledges nothing and is removed when no children remain; forced alerts
+stay separate. The main-screen inbox button displays the unviewed count, refreshed
+when the screen resumes.
 
 Computer notifications provide **Normal alert / Ring alert / Forced alert**
 (普通提醒 / 响铃提醒 / 强制提醒). Normal follows system channel sound/vibration;

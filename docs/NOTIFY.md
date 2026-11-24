@@ -84,6 +84,10 @@ this screen does not acknowledge other notifications or silence alarms. Forced
 notification taps continue to open the question screen. Alerts received before
 this feature was installed are unavailable. This local history is independent
 of the unchanged process-memory API status/idempotency records.
+Normal and ring alerts have their own notification group, separate from the
+server notification; tapping its silent summary opens the inbox without
+acknowledging any alert, and the summary disappears when no grouped alerts remain.
+The main-screen button shows the unviewed entry count and refreshes on resume.
 
 **Allow ring alerts** defaults off and retains the `urgent_allowed` preference
 key. **Ring style** (`ring_style`) is **Vibrate and sound** (`both`, default),

@@ -328,6 +328,9 @@
     <string name="notify_forced_new_question_note">已尝试两次，换一道题试试</string>
     <string name="notify_forced_submit">提交</string>
     <string name="notify_inbox">通知</string>
+    <string name="notify_inbox_new">通知（%1$d 条新）</string>
+    <string name="notify_group_title">电脑发来的新通知</string>
+    <string name="notify_group_text">点击查看所有当前通知的全文。</string>
     <string name="notify_inbox_back">返回</string>
     <string name="notify_history_help">本机保存最近 %1$d 条电脑发来的通知全文，在这里阅读不会关闭其他提醒。</string>
     <string name="notify_current">当前通知（%1$d）</string>

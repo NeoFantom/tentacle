@@ -85,6 +85,7 @@ class MainActivity : Activity() {
     private lateinit var heroText: TextView
     private lateinit var startStop: Button
     private lateinit var ways: LinearLayout
+    private lateinit var notifyInbox: Button
 
     private lateinit var attentionCard: LinearLayout
     private lateinit var attentionItems: LinearLayout
@@ -493,7 +494,7 @@ class MainActivity : Activity() {
 
         updateBannerSection()
         heroSection()
-        button(card(), getString(R.string.notify_inbox), ButtonKind.OUTLINE, fill = true) {
+        notifyInbox = button(card(), getString(R.string.notify_inbox), ButtonKind.OUTLINE, fill = true) {
             startActivity(Intent(this, dev.tentacle.notify.NotificationHistoryActivity::class.java))
         }
         attentionSection()
@@ -1412,6 +1413,9 @@ class MainActivity : Activity() {
         refreshUpdates()
         refreshCodes()
         refreshPhoneNotifications()
+        val unviewed = dev.tentacle.notify.PhoneNotifications.history(this).snapshot().current.size
+        notifyInbox.text = if (unviewed > 0) getString(R.string.notify_inbox_new, unviewed)
+            else getString(R.string.notify_inbox)
         portText.text = getString(R.string.port_value, settings.port)
         refreshNotify()
         updating = true

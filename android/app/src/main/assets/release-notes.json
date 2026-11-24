@@ -3,10 +3,10 @@
     {
       "version": "unreleased",
       "en": [
-        "Open Notifications to read new alerts in full and expand older history, saved on your phone even after restarting the app."
+        "Tap a notification, its bundle or Notifications to read new alerts in full and expand older history, saved on your phone even after restarting the app."
       ],
       "zh": [
-        "新增“通知”入口，可阅读新通知全文并展开历史通知，重启应用后仍可查看。"
+        "点击通知、通知分组或“通知”入口，可阅读新通知全文并展开历史通知，重启应用后仍可查看。"
       ]
     },
     {
