@@ -42,6 +42,7 @@
             android:launchMode="singleTop" android:excludeFromRecents="true" />
         <activity android:name=".notify.NotificationOpenActivity" android:exported="false"
             android:excludeFromRecents="true" />
+        <activity android:name=".notify.NotificationHistoryActivity" android:exported="false" />
         <receiver android:name=".notify.NotifyReceiver" android:exported="false" />
         <service android:name=".ServerService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"

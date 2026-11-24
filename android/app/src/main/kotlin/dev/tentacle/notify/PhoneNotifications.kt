@@ -29,6 +29,7 @@ import dev.tentacle.codes.CodeStores
 import dev.tentacle.core.NotifyDelivery
 import dev.tentacle.core.NotifyMessage
 import dev.tentacle.core.NotifyStore
+import dev.tentacle.core.NotifyHistory
 import dev.tentacle.core.Redactor
 import dev.tentacle.core.AlertQuestionStore
 import java.io.File
@@ -42,6 +43,8 @@ object PhoneNotifications {
     const val ACTION_DISMISS = "dev.tentacle.notify.DISMISS"
     private const val EXTRA_FORCED_MARKER = "dev.tentacle.notify.FORCED"
     private const val NOTIFICATION_ID = 2
+    private const val COMPUTER_ALERTS_GROUP = "dev.tentacle.computer_alerts"
+    private const val SUMMARY_NOTIFICATION_ID = 3
     private val handler = Handler(Looper.getMainLooper())
     private val deadlines = AlertDeadline(SystemClock::elapsedRealtime)
     private val timeouts = AlarmTimeouts(deadlines,
@@ -54,6 +57,12 @@ object PhoneNotifications {
     private var alarmWakeLock: PowerManager.WakeLock? = null
     @Volatile private var store: NotifyStore? = null
     @Volatile private var questionStore: AlertQuestionStore? = null
+    @Volatile private var historyStore: NotifyHistory? = null
+
+    fun history(context: Context): NotifyHistory = historyStore ?: synchronized(this) {
+        historyStore ?: NotifyHistory(File(context.applicationContext.filesDir, "notify-history.json"))
+            .also { historyStore = it }
+    }
 
     fun get(context: Context): NotifyStore = store ?: synchronized(this) {
         store ?: run {
@@ -74,6 +83,9 @@ object PhoneNotifications {
                     } catch (error: RuntimeException) {
                         AppLog.append("notify delivery failed type=${error.javaClass.simpleName}")
                         planned.copy(shown = false, reason = "notification_failed")
+                    }
+                    runCatching { history(app).record(message, result) }.onFailure {
+                        AppLog.append("notify history could not be saved")
                     }
                     AppLog.append(NotifyLog.delivery(result.level, result.shown, result.downgraded, message.text,
                         Redactor(currentSecrets = { listOf(Settings(app).token) },
@@ -136,6 +148,7 @@ object PhoneNotifications {
             builder.addAction(Notification.Action.Builder(null, localized.getString(R.string.notify_acknowledge),
                 broadcast(context, message.id, ACTION_ACK)).build())
         }
+        if (!forced) builder.setGroup(COMPUTER_ALERTS_GROUP)
         if (alarm && permissions(context).fullScreenAllowed) {
             val activity = if (forced) ForcedAlertActivity::class.java else UrgentAlertActivity::class.java
             val fullScreen = PendingIntent.getActivity(context, 0,
@@ -146,6 +159,23 @@ object PhoneNotifications {
         }
         if (quiet) builder.setOnlyAlertOnce(true)
         context.getSystemService(NotificationManager::class.java).notify(message.id, NOTIFICATION_ID, builder.build())
+        if (!forced) {
+            val inbox = PendingIntent.getActivity(context, 0,
+                Intent(context, NotificationOpenActivity::class.java).setData(uri(COMPUTER_ALERTS_GROUP, "inbox")),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val summary = Notification.Builder(localized, NORMAL_CHANNEL)
+                .setSmallIcon(R.drawable.ic_server)
+                .setContentTitle(localized.getString(R.string.notify_group_title))
+                .setContentText(localized.getString(R.string.notify_group_text))
+                .setContentIntent(inbox)
+                .setGroup(COMPUTER_ALERTS_GROUP)
+                .setGroupSummary(true)
+                .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
+                .setOnlyAlertOnce(true)
+                .build()
+            context.getSystemService(NotificationManager::class.java)
+                .notify(COMPUTER_ALERTS_GROUP, SUMMARY_NOTIFICATION_ID, summary)
+        }
         if (alarm) {
             handler.post {
                 val entry = runCatching { get(context).get(message.id) }.getOrNull()
@@ -191,14 +221,27 @@ object PhoneNotifications {
         Intent(context, NotifyReceiver::class.java).setAction(action).setData(uri(id, action)).putExtra(EXTRA_ID, id),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
+    private fun cancelEmptySummary(context: Context) {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val hasChildren = manager.activeNotifications.any {
+            it.notification.group == COMPUTER_ALERTS_GROUP &&
+                it.notification.flags and Notification.FLAG_GROUP_SUMMARY == 0
+        }
+        if (!hasChildren) manager.cancel(COMPUTER_ALERTS_GROUP, SUMMARY_NOTIFICATION_ID)
+    }
+
     fun respond(context: Context, id: String, state: String) {
         // Activities and receivers run here; serialize alarm cleanup with the timeout callback.
         handler.post {
-            val entry = runCatching { get(context).get(id) }.getOrNull() ?: return@post
+            val entry = runCatching { get(context).get(id) }.getOrNull() ?: run {
+                cancelEmptySummary(context)
+                return@post
+            }
             if (entry.delivery.level == "forced") return@post
             val changed = runCatching { get(context).transition(id, state) }.getOrNull()
             stopAlarm(context, id, quiet = false)
             context.getSystemService(NotificationManager::class.java).cancel(id, NOTIFICATION_ID)
+            cancelEmptySummary(context)
             if (changed != null) AppLog.append("notify id=$id state=${changed.state}")
         }
     }
@@ -264,6 +307,7 @@ object PhoneNotifications {
 
     fun onNotificationDismissed(context: Context, id: String) {
         handler.post {
+            cancelEmptySummary(context)
             val entry = runCatching { get(context).get(id) }.getOrNull() ?: return@post
             if (entry.delivery.level == "forced" && entry.state == "shown") {
                 // Some Android builds permit an ongoing notification to be swiped; put it back without alerting.
@@ -344,6 +388,7 @@ object PhoneNotifications {
                 context.getSystemService(NotificationManager::class.java).cancel(id, NOTIFICATION_ID)
                 post(context, entry.message, entry.delivery, quiet = true)
             }
+            cancelEmptySummary(context)
         }
         observers.toList().forEach { it(id) }
     }

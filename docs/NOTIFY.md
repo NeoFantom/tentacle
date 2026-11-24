@@ -70,7 +70,24 @@ without changing `timeout`. Turning forced off deliberately records
 ## Phone behavior and settings
 
 **Normal alert — always on** uses the system notification sound/vibration
-settings. Tap opens Tentacle and acknowledges; swipe dismisses.
+settings. Tap opens the notification inbox and acknowledges; swipe dismisses.
+
+The main screen's **Notifications** button opens the same inbox. It keeps the
+latest 200 successfully displayed computer notifications in app-private storage
+across restarts. Each entry shows the full title and text, receipt time and
+alert level. All unviewed notifications and the tapped notification form the
+expanded **Current notifications** batch; previously viewed notifications are
+under **History**, collapsed by default. New arrivals join the current batch
+while this screen is visible, and rotating the phone preserves the batch and
+history disclosure. A later visit shows the next unviewed batch. Merely reading
+this screen does not acknowledge other notifications or silence alarms. Forced
+notification taps continue to open the question screen. Alerts received before
+this feature was installed are unavailable. This local history is independent
+of the unchanged process-memory API status/idempotency records.
+Normal and ring alerts have their own notification group, separate from the
+server notification; tapping its silent summary opens the inbox without
+acknowledging any alert, and the summary disappears when no grouped alerts remain.
+The main-screen button shows the unviewed entry count and refreshes on resume.
 
 **Allow ring alerts** defaults off and retains the `urgent_allowed` preference
 key. **Ring style** (`ring_style`) is **Vibrate and sound** (`both`, default),

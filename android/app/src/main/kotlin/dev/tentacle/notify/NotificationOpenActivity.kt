@@ -3,7 +3,6 @@ package dev.tentacle.notify
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
-import dev.tentacle.MainActivity
 
 /** Only a system-held pending intent can enter this unexported acknowledgement boundary. */
 class NotificationOpenActivity : Activity() {
@@ -12,7 +11,8 @@ class NotificationOpenActivity : Activity() {
         intent.getStringExtra(PhoneNotifications.EXTRA_ID)?.let {
             PhoneNotifications.respond(applicationContext, it, "acknowledged")
         }
-        startActivity(Intent(this, MainActivity::class.java)
+        startActivity(Intent(this, NotificationHistoryActivity::class.java)
+            .putExtra(PhoneNotifications.EXTRA_ID, intent.getStringExtra(PhoneNotifications.EXTRA_ID))
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
         finish()
     }

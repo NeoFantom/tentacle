@@ -1,6 +1,15 @@
 {
   "notes": [
     {
+      "version": "unreleased",
+      "en": [
+        "Tap a notification, its bundle or Notifications to read new alerts in full and expand older history, saved on your phone even after restarting the app."
+      ],
+      "zh": [
+        "点击通知、通知分组或“通知”入口，可阅读新通知全文并展开历史通知，重启应用后仍可查看。"
+      ]
+    },
+    {
       "version": "0.7.7",
       "en": [
         "Alerts now come in three strengths: Normal, Ring (vibrate, sound or both) and Forced.",
