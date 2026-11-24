@@ -29,6 +29,7 @@ import dev.tentacle.codes.CodeStores
 import dev.tentacle.core.NotifyDelivery
 import dev.tentacle.core.NotifyMessage
 import dev.tentacle.core.NotifyStore
+import dev.tentacle.core.NotifyHistory
 import dev.tentacle.core.Redactor
 import dev.tentacle.core.AlertQuestionStore
 import java.io.File
@@ -54,6 +55,12 @@ object PhoneNotifications {
     private var alarmWakeLock: PowerManager.WakeLock? = null
     @Volatile private var store: NotifyStore? = null
     @Volatile private var questionStore: AlertQuestionStore? = null
+    @Volatile private var historyStore: NotifyHistory? = null
+
+    fun history(context: Context): NotifyHistory = historyStore ?: synchronized(this) {
+        historyStore ?: NotifyHistory(File(context.applicationContext.filesDir, "notify-history.json"))
+            .also { historyStore = it }
+    }
 
     fun get(context: Context): NotifyStore = store ?: synchronized(this) {
         store ?: run {
@@ -74,6 +81,9 @@ object PhoneNotifications {
                     } catch (error: RuntimeException) {
                         AppLog.append("notify delivery failed type=${error.javaClass.simpleName}")
                         planned.copy(shown = false, reason = "notification_failed")
+                    }
+                    runCatching { history(app).record(message, result) }.onFailure {
+                        AppLog.append("notify history could not be saved")
                     }
                     AppLog.append(NotifyLog.delivery(result.level, result.shown, result.downgraded, message.text,
                         Redactor(currentSecrets = { listOf(Settings(app).token) },

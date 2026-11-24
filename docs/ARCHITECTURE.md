@@ -191,6 +191,19 @@ actual service state when resumed and observes starts/stops while visible.
 Permission guidance reports actual grants, including all-files access,
 notifications, battery optimisation and vendor autostart settings.
 
+The main screen's **Notifications** button opens an app-private inbox of the
+latest 200 successfully displayed computer alerts, including their full title,
+text, level and receipt time. `:core` owns atomic `filesDir/notify-history.json`
+storage and viewed/unviewed grouping, independently of the existing 50-entry,
+process-memory HTTP status store. A normal/ring notification tap opens this
+inbox, with all unviewed alerts and the tapped alert expanded as the current
+batch; older viewed alerts are collapsed by default. The current batch survives
+activity recreation; new arrivals join it while the inbox is visible. Viewing
+the inbox marks entries viewed locally, without acknowledging other alerts or
+stopping ring/forced alarms. Forced taps still require the existing question.
+History survives process restart; earlier alerts from versions without history
+cannot be recovered. No HTTP endpoint or acknowledgement semantics change.
+
 Computer notifications provide **Normal alert / Ring alert / Forced alert**
 (普通提醒 / 响铃提醒 / 强制提醒). Normal follows system channel sound/vibration;
 a tap acknowledges and a swipe dismisses. Ring and forced have independent

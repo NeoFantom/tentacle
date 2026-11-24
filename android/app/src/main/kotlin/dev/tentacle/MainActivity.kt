@@ -493,6 +493,9 @@ class MainActivity : Activity() {
 
         updateBannerSection()
         heroSection()
+        button(card(), getString(R.string.notify_inbox), ButtonKind.OUTLINE, fill = true) {
+            startActivity(Intent(this, dev.tentacle.notify.NotificationHistoryActivity::class.java))
+        }
         attentionSection()
         requestsSection()
         connectSection()

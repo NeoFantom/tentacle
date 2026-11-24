@@ -327,4 +327,17 @@
     <string name="notify_forced_wrong">不太对，再试一次</string>
     <string name="notify_forced_new_question_note">已尝试两次，换一道题试试</string>
     <string name="notify_forced_submit">提交</string>
+    <string name="notify_inbox">通知</string>
+    <string name="notify_inbox_back">返回</string>
+    <string name="notify_history_help">本机保存最近 %1$d 条电脑发来的通知全文，在这里阅读不会关闭其他提醒。</string>
+    <string name="notify_current">当前通知（%1$d）</string>
+    <string name="notify_current_empty">没有新通知，可以展开历史通知查看之前的内容。</string>
+    <string name="notify_history">历史通知（%1$d）</string>
+    <string name="notify_history_disclosure">%1$s  %2$s</string>
+    <string name="notify_history_metadata">%1$s · %2$s</string>
+    <string name="notify_history_empty">暂无历史通知。</string>
+    <string name="notify_history_save_failed">通知历史暂时无法保存。</string>
+    <string name="notify_inbox_normal">普通提醒</string>
+    <string name="notify_inbox_ring">响铃提醒</string>
+    <string name="notify_inbox_forced">强制提醒</string>
 </resources>
