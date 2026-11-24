@@ -1,6 +1,15 @@
 {
   "notes": [
     {
+      "version": "unreleased",
+      "en": [
+        "The screen no longer jumps when a new card appears above what you are reading, such as after checking for updates."
+      ],
+      "zh": [
+        "上方出现新卡片（例如检查更新后）时，屏幕不再把你正在看的内容往下推。"
+      ]
+    },
+    {
       "version": "0.7.8",
       "en": [
         "Tap a notification, its bundle or Notifications to read new alerts in full and expand older history, saved on your phone even after restarting the app."

@@ -468,7 +468,7 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- screen
 
     private fun buildScreen() {
-        scroll = ScrollView(this).apply {
+        scroll = AnchoredScrollView(this).apply {
             isFillViewport = true
             clipToPadding = true
         }
