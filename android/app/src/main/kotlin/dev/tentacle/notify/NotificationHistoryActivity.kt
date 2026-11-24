@@ -72,6 +72,8 @@ class NotificationHistoryActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // A new tap starts a new batch: unviewed alerts plus the tapped one, not the previous visit's.
+        currentIds.clear()
         intent.getStringExtra(PhoneNotifications.EXTRA_ID)?.let(currentIds::add)
         historyExpanded = false
         lastView = null
