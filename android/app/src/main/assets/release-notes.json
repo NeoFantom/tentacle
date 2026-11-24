@@ -1,7 +1,7 @@
 {
   "notes": [
     {
-      "version": "unreleased",
+      "version": "0.7.9",
       "en": [
         "The screen no longer jumps when a new card appears above what you are reading, such as after checking for updates."
       ],
